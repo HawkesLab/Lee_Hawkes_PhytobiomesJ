@@ -4,7 +4,7 @@ This repository includes four main data files and a metadata file to supplement 
 
 The sample matrix ("SAMmatrix.csv") includes information about each leaf, root, and soil sample collected from switchgrass plants in the field and associated environmental measurements collected at the plant-level and site-level. 
 
-The ASV matrix ("ASVmatrix.csv") includes the number of amplicon sequence variant (ASV) reads for each sample (rows) and unique ASV (columns).
+The ASV matrix ("ASVmatrix.csv") includes the number of amplicon sequence variant (ASV) reads for each sample (rows) and unique ASV (columns). The raw sequence data used to generate this matrix is available through the NCBI SRA database under accession number PRJNA648664 (https://www.ncbi.nlm.nih.gov/bioproject/PRJNA648664/).
 
 The taxonomy matrix ("TAXmatrix.csv") includes the taxonomic classification of each unique ASV as was used in the manuscript. 
 
