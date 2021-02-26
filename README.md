@@ -1,6 +1,6 @@
 # Lee_Hawkes_PhytobiomesJ
 
-This repository includes four main data files and a metadata file to supplement the manuscript by Lee & Hawkes titled "Plant and soil drivers of whole-plant microbiomes: variation in switchgrass fungi from coastal to mountain sites" for publication in Phytobiomes J.
+This repository includes four main data files and a metadata file in the folder "data" to supplement the manuscript by Lee & Hawkes titled "Plant and soil drivers of whole-plant microbiomes: variation in switchgrass fungi from coastal to mountain sites" for publication in Phytobiomes J.
 
 The sample matrix ("SAMmatrix.csv") includes information about each leaf, root, and soil sample collected from switchgrass plants in the field and associated environmental measurements collected at the plant-level and site-level. 
 
