@@ -1,0 +1,17 @@
+
+Analysis of Variance, using Residual Randomization
+Permutation procedure: Randomization of null model residuals 
+Number of permutations: 1000 
+Estimation method: Ordinary Least Squares 
+Sums of Squares and Cross-products: Type III 
+Effect sizes (Z) based on F distributions
+
+           Df     SS      MS     Rsq     F      Z Pr(>F)   
+Site       13 192057 14773.6 0.30568 3.285 21.712  0.001 **
+Residuals  97 436244  4497.4 0.69432                       
+Total     110 628302                                       
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Call: lm.rrpp(f1 = curr.vst ~ Site, iter = 999, SS.type = "III", data = curr.sam,  
+    print.progress = T)

@@ -1,0 +1,1846 @@
+---
+title: "Illumina data, Fungi: Q1"
+author: "Marissa Lee"
+date: "12/16/2019"
+output:
+  pdf_document: default
+---
+
+Q1. Given within-plant habitat, do fungal communities diverge/converge based on proximity in the landscape?
+
+*Table of contents*
+
+#### A. Do and save calculations for VST and DPCoA objects
+1. VST
+2. DPCoA and Rao distance matrix
+
+#### B. Does fungal community composition differ between within-plant habitat, sites, and their interaction?
+1. RRPP w/ VST and RaoDist -- Full model
+2. Examine each within-plant habitat individually
+3. Make DPCoA plot
+  
+#### C. Does alpha diversity differ between within-plant habitat?
+1. Calculate alpha diversity
+2. Venn diagram of ASVs shared/unique to leaf, root, soil
+  
+#### D. Is there a critical distance where communities diverge/converge?
+1. Generate pairwise dataframes, save, and plot
+2. Breakpoint regression with spatial distance
+3. Breakpoint regression with environmental distance
+
+________________________________
+
+Load packages, functions, paths
+```{r setup, include=FALSE, cache = T}
+knitr::opts_chunk$set(echo = T)
+
+# paths
+merged_path <- "data_intermediates/Illum_analyses/FUN-merged"
+out_path <- "output/illumina/Q1"
+
+# custom functions
+source("code/helpers.R") # misc helpful fxns
+sourceDir("code") # loads all the custom functions in this folder
+
+# formatting
+require("tidyverse"); packageVersion("tidyverse")
+require("readxl"); packageVersion("readxl") # to read in excel files
+#library("ggsci"); packageVersion("ggsci") # pretty colors
+library("gridExtra"); packageVersion("gridExtra")
+
+# stats
+#library("compositions"); packageVersion("compositions") # clr()
+#library("philr") #
+library("RRPP"); packageVersion("RRPP")
+library("vegan"); packageVersion("vegan") #-- needed?
+#library("gdm")
+
+# bioinformatics
+#library("DESeq2")
+library("phyloseq");  packageVersion("phyloseq")
+library("speedyseq")
+#library("DECIPHER"); packageVersion("DECIPHER")
+#library("ape"); packageVersion("ape")
+```
+
+Custom functions
+```{r}
+# calc geometric mean of each ASV
+gm_mean = function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+
+extract_uniquePairDists<-function(dist.mat){
+  
+  x<-as.matrix(dist.mat)
+  rowCol <- expand.grid(rownames(x), colnames(x))
+  labs <- rowCol[as.vector(upper.tri(x,diag=F)),]
+  df <- cbind(labs, x[upper.tri(x,diag=F)])
+  colnames(df) <- c("sp1","sp2","dist")
+  
+  return(df)
+}
+
+make_dist_df <- function(ps, vst, raodis, bray.dist, physor.dist, env.dist.df){
+  
+  ####
+  # calculate pairwise community distances w/ vst
+  asv.dist <- dist(vst) # calculate pairwise distances
+  asv.dist.l <- extract_uniquePairDists(asv.dist) # put into a dataframe
+  asv.dist.l %>%
+    dplyr::rename('vst.comm.dist'='dist') -> asv.dist.l.vst
+  
+  # format pairwise Rao distances
+  rao.mat <- as.matrix(raodis)
+  rao.dist.l <- extract_uniquePairDists(rao.mat) # put into a dataframe
+  rao.dist.l %>%
+    dplyr::rename('rao.comm.dist'='dist') -> asv.dist.l.rao
+  
+  # format pairwise Bray distances
+  b.mat <- as.matrix(bray.dist)
+  b.dist.l <- extract_uniquePairDists(b.mat) # put into a dataframe
+  b.dist.l %>%
+    dplyr::rename('bray.comm.dist'='dist') -> asv.dist.l.b
+  
+  # format pairwise phylosor distances
+  p.mat <- as.matrix(physor.dist)
+  p.dist.l <- extract_uniquePairDists(p.mat) # put into a dataframe
+  p.dist.l %>%
+    dplyr::rename('physor.comm.dist'='dist') -> asv.dist.l.p
+  
+  # calculate pairwise spatial distances
+  sam <- data.frame(sample_data(ps))
+  sam %>%
+    dplyr::select(samp.lon, samp.lat) -> samp.gps
+  require(geodist)
+  hav.dist <- geodist(samp.gps, 
+                      paired = TRUE, 
+                      sequential = FALSE, pad = FALSE,
+                      measure = "haversine")
+  colnames(hav.dist) <- row.names(samp.gps)
+  row.names(hav.dist) <- row.names(samp.gps)
+  hav.dist.df <- extract_uniquePairDists(hav.dist)
+  hav.dist.df %>%
+    dplyr::rename('hav.dist.m'='dist') -> hav.dist.df
+  
+  # load pairwise environmental distances
+  #env.dist.df
+  
+  ####
+  # put it all together
+  asv.dist.l.vst %>%
+    left_join(asv.dist.l.rao) %>%
+    left_join(asv.dist.l.b) %>%
+    left_join(asv.dist.l.p) %>%
+    left_join(hav.dist.df) %>%
+    left_join(env.dist.df) -> dist.df
+  sam %>%
+    dplyr::select(sample.name.match, Site, Samp, Tissue) -> sam.indx
+  dist.df %>%
+    dplyr::rename('sample.name.match'= 'sp1') %>%
+    left_join(sam.indx) %>%
+    dplyr::rename('Site_samp1'= 'Site',
+                  'Samp_samp1'= 'Samp',
+                  'Tissue_samp1'='Tissue',
+                  'samp1'='sample.name.match') %>%
+    dplyr::rename('sample.name.match'= 'sp2') -> dist.df
+  dist.df %>%
+    left_join(sam.indx) %>%
+    dplyr::rename('Site_samp2'= 'Site',
+                  'Samp_samp2'= 'Samp',
+                  'Tissue_samp2'='Tissue',
+                  'samp2'='sample.name.match') -> dist.df
+  
+  # code the types of site and tissue comparisons
+  dist.df %>%
+    mutate(sameSite = ifelse(Site_samp1 == Site_samp2, TRUE, FALSE)) %>%
+    mutate(sameTissue = ifelse(Tissue_samp1 == Tissue_samp2, TRUE, FALSE)) -> dist.df
+  
+  # remove distances between difference tissue types
+  dist.df %>%
+    filter(sameTissue == T) %>%
+    mutate(hav.dist.km = hav.dist.m/1000) -> dist.df
+  
+  return(dist.df)
+  
+}
+
+```
+
+Set plotting parameters
+```{r}
+
+tissue.colors <- c("#288737", "#4678a8", "#cbba4e")
+names(tissue.colors) <- c("L","R","S")
+```
+
+Print sample data, ASV matrix, and taxonomy table [commented out so it doesn't get overwritten unnessarily]
+```{r}
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# ps
+# 
+# # ASV matrix
+# otu <- otu_table(ps)
+# otu.df <- data.frame(otu)
+# dim(otu.df)
+# write.csv(otu.df, file = "data/ASVmatrix.csv")
+# 
+# # taxonomy table
+# tax <- tax_table(ps)
+# tax.df <- data.frame(tax)
+# write.csv(tax.df, file = "data/TAXmatrix.csv")
+# 
+# # sample table
+# sam <- sample_data(ps)
+# sam.df <- data.frame(sam)
+# dim(sam.df)
+# colnames(sam.df)
+# 
+# sam.df %>%
+#   separate(Site, into = c("t1","t2",NA)) %>%
+#   mutate(Site = paste0(t1, "-",t2)) %>%
+#   select(sample.name.match, Site, mono.mixed, cultivar, plotarea.m2,
+#          max.height.m, basal.area.m2, stand.age.yrs,
+#          ph, perc.C, watercontent, doc,
+#          p.resin, TIN, SOM, W.V, mbc, Cu, K, Mg, Mn, P, Zn, Ca, perc.N, S,
+#          perc.clay, perc.sand, MAP.mm, MAT.C,
+#          lat, lon, samp.lat, samp.lon) -> sam.out
+# write.csv(sam.out, file = "data/SAMmatrix.csv")
+```
+
+________________________________
+# A. Do and save calculations for VST and DPCoA objects
+
+## 1. VST
+```{r}
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# ps
+# 
+# # # calculate vst
+# ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+# geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+# ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+# ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+# #plotDispEsts(ps_ds) # plot the dispersion estimates
+# vst <- getVarianceStabilizedData(ps_ds)
+# vst <- t(vst) # need to make the rows samples
+# saveRDS(vst, file = file.path("output/illumina/Q0", "vst_all.RData"))
+# vst <- readRDS(file = file.path("output/illumina/Q0", "vst_all.RData"))
+
+```
+
+## 2. DPCoA and Rao distance matrix
+```{r}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+ps
+
+# DPCoA distance matrix
+#tree <- phy_tree(ps)
+#asv <- data.frame(otu_table(ps), stringsAsFactors = F)
+# # square root of the cophenetic/patristic (cophenetic.phylo)
+# # cophenetic.phylo = pairwise distances between the pairs of tips from a phylogenetic tree using its branch lengths
+#library(ade4); packageVersion("ade4")
+#library(ape); packageVersion("ape")
+#phylo.dist <- cophenetic.phylo(tree)
+#phylo.dist <- as.dist(phylo.dist)
+#sqrt.phylo.dist <- sqrt(phylo.dist)
+# # #is.euclid(sqrt.phylo.dist)
+#ps.dpcoa <- dpcoa(df = asv, dis = sqrt.phylo.dist, scannf = FALSE, nf = 2, RaoDecomp = TRUE)
+#ps.raodis <- ps.dpcoa$RaoDis
+#DPCoA seeks to represent the relationship between the locations and species with meaningful mea- sures of distance. This distance is known as the Rao Dissimilarity
+#saveRDS(ps.dpcoa, file = file.path("output/illumina/Q0", "dpcoa_all.RData"))
+#saveRDS(ps.raodis, file = file.path("output/illumina/Q0", "dpcoa_all_raodist.RData"))
+
+#ps.dpcoa <- readRDS("output/illumina/Q0/dpcoa_all.RData")
+#raodis <- readRDS("output/illumina/Q0/dpcoa_all_raodist.RData")
+
+```
+
+
+________________________________
+# B. Does fungal community composition differ between within-plant habitat, sites, and their interaction?
+
+## 1. RRPP w/ VST and RaoDist -- Full model
+```{r}
+# package.version("rrpp")
+# package.version("ade4")
+# package.version("DESeq2")
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+ps
+
+# load VST matrix
+vst <- readRDS(file = file.path("output/illumina/Q0", "vst_all.RData"))
+
+# load Rao distance matrix
+raodis <- readRDS("output/illumina/Q0/dpcoa_all_raodist.RData")
+sum(row.names(vst) != row.names(raodis)) # this needs to be 0, samples in the same order
+
+# add sample data
+sam <- data.frame(sample_data(ps))
+sam$Tissue <- factor(sam$Tissue)
+sam$Samp <- factor(sam$Samp)
+sam$Site <- factor(sam$Site)
+
+library(RRPP)
+
+### VST
+fit.vst <- lm.rrpp(vst ~ Site + Tissue + Site:Tissue, data = sam, SS.type = "III", iter = 999)
+fit.vst$LM$term.labels  #check order of model terms
+anova.fit.vst <- anova(fit.vst, effect.type = "F", 
+                       error = c("Site:Tissue","Site:Tissue","Residuals"))
+summary(anova.fit.vst, formula = false)
+capture.output(summary(anova.fit.vst, formula = false),
+               file = file.path(out_path,"rrppVST_Site_x_Tissue.txt"))
+
+### Rao
+rdf <- rrpp.data.frame(d = raodis, 
+                       Site = factor(sam$Site),
+                       Samp = factor(sam$Samp),
+                       Tissue = factor(sam$Tissue))
+fit.rao <- lm.rrpp(d ~ Site + Tissue + Site:Tissue, data = rdf, SS.type = "III", iter = 999)
+fit.rao$LM$term.labels  #check order of model terms
+anova.fit.rao <- anova(fit.rao, effect.type = "F", 
+                       error = c("Site:Tissue","Site:Tissue","Residuals"))
+summary(anova.fit.rao, formula = false)
+capture.output(summary(anova.fit.rao, formula = false),
+               file = file.path(out_path,"rrppRAO_Site_x_Tissue.txt"))
+
+
+# #---------------#
+# # Plot the prediction ordination
+# pred.df <- data.frame(unique(sam[,c("Site","Tissue")]), row.names = NULL)
+# pred <- predict(fit, pred.df, confidence = 0.95)
+# plot(pred, PC = TRUE)
+#   
+# pc.mean <- pred$pc.mean[,1:2]
+# pc.ucl<- pred$pc.ucl[,1:2]
+# pc.lcl<- pred$pc.lcl[,1:2]
+# plot.df <- data.frame(Site = pred.df$Site, Tissue = pred.df$Tissue,
+#                       mean = pc.mean, ucl = pc.ucl, lcl = pc.lcl)
+# plot.df %>%
+#     separate(Site, into = c("thing1","thing2","thing3")) %>%
+#     mutate(Site.pretty = paste(thing1, thing2, sep = "-")) -> plot.df
+# 
+# p.all <- ggplot(plot.df, aes(x = mean.PC1, y = mean.PC2, color = Tissue)) +
+#   geom_point() +
+#   theme_classic() +
+#   xlab("PC1 (20%)") + ylab("PC2 (6.44%)") +
+#   geom_errorbar(aes(ymin = lcl.PC2, ymax = ucl.PC2)) +
+#   geom_errorbarh(aes(xmin = lcl.PC1, xmax = ucl.PC1)) 
+# p.all
+# ggsave(p.all, filename = file.path(out_path,"rrpp_SiteTissue.pdf"), width = 6, height = 4)
+```
+Yes, there is a strong Site x Tissue interaction
+
+## 2. Examine each within-plant habitat individually -- don't re-calculate VST or Rao
+
+*Leaf*
+```{r}
+library(tidyverse)
+sam %>%
+  filter(Tissue == "L") -> curr.sam
+curr.vst <- vst[row.names(vst) %in% curr.sam$sample.name.match,]
+sum(row.names(curr.vst) != curr.sam$sample.name.match) # this needs to be 0
+curr.sam$Samp <- factor(curr.sam$Samp)
+curr.sam$Site <- factor(curr.sam$Site)
+library("usedist")
+raodis.curr <- dist_subset(raodis, curr.sam$sample.name.match)
+rdf.curr <- rrpp.data.frame(d = raodis.curr, 
+                       Site = factor(curr.sam$Site),
+                       Samp = factor(curr.sam$Samp))
+
+### VST
+fit.vst <- lm.rrpp(curr.vst ~ Site, data = curr.sam,
+               SS.type = "III", iter = 999, print.progress = T)
+fit.vst$LM$term.labels  #check order of model terms
+anova.fit.vst <- anova(fit.vst, effect.type = "F", error = c("Residuals"))
+summary(anova.fit.vst, formula = false)
+capture.output(summary(anova.fit.vst, formula = false), file = file.path(out_path,"rrppVST_Site_LEAF.txt"))
+
+### Rao
+fit.rao <- lm.rrpp(d ~ Site, data = rdf.curr,
+               SS.type = "III", iter = 999, print.progress = T)
+fit.rao$LM$term.labels  #check order of model terms
+anova.fit.rao <- anova(fit.rao, effect.type = "F", error = c("Residuals"))
+summary(anova.fit.rao, formula = false)
+capture.output(summary(anova.fit.rao, formula = false), file = file.path(out_path,"rrppRAO_Site_LEAF.txt"))
+
+#---------------#
+# # Plot the prediction ordination
+# pred.df <- data.frame(Site = unique(curr.sam[,c("Site")]), row.names = NULL)
+# pred <- predict(fit, pred.df, confidence = 0.95)
+# plot(pred, PC = TRUE)
+#   
+# pc.mean <- pred$pc.mean[,1:2]
+# pc.ucl<- pred$pc.ucl[,1:2]
+# pc.lcl<- pred$pc.lcl[,1:2]
+# plot.df <- data.frame(Site = pred.df$Site,
+#                       mean = pc.mean, ucl = pc.ucl, lcl = pc.lcl)
+# plot.df %>%
+#     separate(Site, into = c("thing1","thing2","thing3")) %>%
+#     mutate(Site.pretty = paste(thing1, thing2, sep = "-")) -> plot.df
+# 
+# p.l <- ggplot(plot.df, aes(x = mean.PC1, y = mean.PC2)) +
+#   geom_point() +
+#   geom_text(aes(label = Site.pretty), hjust = -0.1, vjust = 1.1, size = 3) +
+#   theme_classic() +
+#   xlab("PC1 (17.65%)") + ylab("PC2 (14.5%)") +
+#   geom_errorbar(aes(ymin = lcl.PC2, ymax = ucl.PC2)) +
+#   geom_errorbarh(aes(xmin = lcl.PC1, xmax = ucl.PC1)) +
+#   ggtitle("a. Leaf")
+# p.l
+# ggsave(p.l, filename = file.path(out_path,"rrpp_Site_l.pdf"), width = 5, height = 4)
+
+
+```
+Yes, leaf communities differ more between than within sites. 
+
+*Root*
+```{r}
+
+sam %>%
+  filter(Tissue == "R") -> curr.sam
+curr.vst <- vst[row.names(vst) %in% curr.sam$sample.name.match,]
+sum(row.names(curr.vst) != curr.sam$sample.name.match) # this needs to be 0
+curr.sam$Samp <- factor(curr.sam$Samp)
+curr.sam$Site <- factor(curr.sam$Site)
+#library("usedist")
+raodis.curr <- dist_subset(raodis, curr.sam$sample.name.match)
+rdf.curr <- rrpp.data.frame(d = raodis.curr, 
+                       Site = factor(curr.sam$Site),
+                       Samp = factor(curr.sam$Samp))
+
+### VST
+fit.vst <- lm.rrpp(curr.vst ~ Site, data = curr.sam,
+               SS.type = "III", iter = 999, print.progress = T)
+fit.vst$LM$term.labels  #check order of model terms
+anova.fit.vst <- anova(fit.vst, effect.type = "F", error = c("Residuals"))
+summary(anova.fit.vst, formula = false)
+capture.output(summary(anova.fit.vst, formula = false), file = file.path(out_path,"rrppVST_Site_ROOT.txt"))
+
+### Rao
+fit.rao <- lm.rrpp(d ~ Site, data = rdf.curr,
+               SS.type = "III", iter = 999, print.progress = T)
+fit.rao$LM$term.labels  #check order of model terms
+anova.fit.rao <- anova(fit.rao, effect.type = "F", error = c("Residuals"))
+summary(anova.fit.rao, formula = false)
+capture.output(summary(anova.fit.rao, formula = false), file = file.path(out_path,"rrppRAO_Site_ROOT.txt"))
+
+
+# #---------------#
+# # Plot the prediction ordination
+# pred.df <- data.frame(Site = unique(curr.sam[,c("Site")]), row.names = NULL)
+# pred <- predict(fit, pred.df, confidence = 0.95)
+# plot(pred, PC = TRUE)
+#   
+# pc.mean <- pred$pc.mean[,1:2]
+# pc.ucl<- pred$pc.ucl[,1:2]
+# pc.lcl<- pred$pc.lcl[,1:2]
+# plot.df <- data.frame(Site = pred.df$Site,
+#                       mean = pc.mean, ucl = pc.ucl, lcl = pc.lcl)
+# plot.df %>%
+#     separate(Site, into = c("thing1","thing2","thing3")) %>%
+#     mutate(Site.pretty = paste(thing1, thing2, sep = "-")) -> plot.df
+# 
+# p.r <- ggplot(plot.df, aes(x = mean.PC1, y = mean.PC2)) +
+#   geom_point() +
+#   geom_text(aes(label = Site.pretty), hjust = -0.1, vjust = 1.1, size = 3) +
+#   theme_classic() +
+#   xlab("PC1 (13.03%)") + ylab("PC2 (13.84%)") +
+#   geom_errorbar(aes(ymin = lcl.PC2, ymax = ucl.PC2)) +
+#   geom_errorbarh(aes(xmin = lcl.PC1, xmax = ucl.PC1)) +
+#   ggtitle("b. Root")
+# p.r
+# ggsave(p.r, filename = file.path(out_path,"rrpp_Site_r.pdf"), width = 5, height = 4)
+
+```
+Yes, root communities differ more between than within sites
+
+*Soil*
+```{r}
+
+sam %>%
+  filter(Tissue == "S") -> curr.sam
+curr.vst <- vst[row.names(vst) %in% curr.sam$sample.name.match,]
+sum(row.names(curr.vst) != curr.sam$sample.name.match) # this needs to be 0
+curr.sam$Samp <- factor(curr.sam$Samp)
+curr.sam$Site <- factor(curr.sam$Site)
+#library("usedist")
+raodis.curr <- dist_subset(raodis, curr.sam$sample.name.match)
+rdf.curr <- rrpp.data.frame(d = raodis.curr, 
+                       Site = factor(curr.sam$Site),
+                       Samp = factor(curr.sam$Samp))
+
+### VST
+fit.vst <- lm.rrpp(curr.vst ~ Site, data = curr.sam,
+               SS.type = "III", iter = 999, print.progress = T)
+fit.vst$LM$term.labels  #check order of model terms
+anova.fit.vst <- anova(fit.vst, effect.type = "F", error = c("Residuals"))
+summary(anova.fit.vst, formula = false)
+capture.output(summary(anova.fit.vst, formula = false), file = file.path(out_path,"rrppVST_Site_SOIL.txt"))
+
+### Rao
+fit.rao <- lm.rrpp(d ~ Site, data = rdf.curr,
+               SS.type = "III", iter = 999, print.progress = T)
+fit.rao$LM$term.labels  #check order of model terms
+anova.fit.rao <- anova(fit.rao, effect.type = "F", error = c("Residuals"))
+summary(anova.fit.rao, formula = false)
+capture.output(summary(anova.fit.rao, formula = false), file = file.path(out_path,"rrppRAO_Site_SOIL.txt"))
+
+
+# 
+# ###
+# #---------------#
+# # Plot the prediction ordination
+# pred.df <- data.frame(Site = unique(curr.sam[,c("Site")]), row.names = NULL)
+# pred <- predict(fit, pred.df, confidence = 0.95)
+# plot(pred, PC = TRUE)
+#   
+# pc.mean <- pred$pc.mean[,1:2]
+# pc.ucl<- pred$pc.ucl[,1:2]
+# pc.lcl<- pred$pc.lcl[,1:2]
+# plot.df <- data.frame(Site = pred.df$Site,
+#                       mean = pc.mean, ucl = pc.ucl, lcl = pc.lcl)
+# plot.df %>%
+#     separate(Site, into = c("thing1","thing2","thing3")) %>%
+#     mutate(Site.pretty = paste(thing1, thing2, sep = "-")) -> plot.df
+# 
+# p.s <- ggplot(plot.df, aes(x = mean.PC1, y = mean.PC2)) +
+#   geom_point() +
+#   geom_text(aes(label = Site.pretty), hjust = -0.1, vjust = 1.1, size = 3) +
+#   theme_classic() +
+#   xlab("PC1 (13.2%)") + ylab("PC2 (12.28%)") +
+#   geom_errorbar(aes(ymin = lcl.PC2, ymax = ucl.PC2)) +
+#   geom_errorbarh(aes(xmin = lcl.PC1, xmax = ucl.PC1)) +
+#   ggtitle("c. Soil")
+# p.s
+# ggsave(p.s, filename = file.path(out_path,"rrpp_Site_s.pdf"), width = 5, height = 4)
+
+```
+Yes, soil communities differ more between than within sites
+
+
+## 3. Make DPCoA plot
+```{r}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+tree <- phy_tree(ps)
+asv <- data.frame(otu_table(ps), stringsAsFactors = F)
+# # # square root of the cophenetic/patristic (cophenetic.phylo)
+# # # cophenetic.phylo = pairwise distances between the pairs of tips from a phylogenetic tree using its branch lengths
+# # #detach("package:compositions", unload = TRUE)
+# library(ade4); packageVersion("ade4")
+# phylo.dist <- cophenetic.phylo(tree)
+# phylo.dist <- as.dist(phylo.dist)
+# sqrt.phylo.dist <- sqrt(phylo.dist)
+# mod.all <- dpcoa(df = asv, dis = sqrt.phylo.dist, scannf = FALSE, nf = 2, RaoDecomp = TRUE)
+#saveRDS(mod.all, file = file.path(out_path, "dpcoa_all.RData"))
+mod.all <- readRDS(file = file.path("output/illumina/Q0", "dpcoa_all.RData"))
+plot_ordination(ps, mod.all, type="split",
+                color = "phylum", shape = "Tissue") +
+  ggplot2::scale_colour_discrete() +
+  ggplot2::theme_bw() +
+  ggtitle("All DPCoA")
+# ggsave(filename = file.path(out_path, "dpcoa_all.pdf"),
+#        width = 6, height = 4)
+# 
+
+# export the ASV scores
+df <- data.frame(ASV = row.names(mod.all$dls),
+                 DPCoA1 = mod.all$dls$CS1,
+                 DPCoA2 = mod.all$dls$CS2)
+tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+tax %>%
+  left_join(df) %>%
+  select(ASV, DPCoA1, DPCoA2, kingdom, phylum, class, order, family, genus, species) -> df.tax
+write.csv(df.tax, file = file.path(out_path, "asv_dpcoaScores.csv"), row.names = F)
+
+# export the sample scores
+sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+df.sam <- data.frame(sample.name.match = row.names(mod.all$li), 
+           DPCoA1 = mod.all$li$Axis1,
+           DPCoA2 = mod.all$li$Axis2)
+df.sam %>%
+  left_join(sam) %>%
+  dplyr::rename('sample'='sample.name.match') %>%
+  select(sample, DPCoA1, DPCoA2, Tissue, mono.mixed) -> df.sam
+write.csv(df.sam, file = file.path(out_path, "sample_dpcoaScores.csv"), row.names = F)
+```
+
+________________________________
+# C. Does alpha diversity differ between within-plant habitat?
+
+Summarize the number of ASVs per phylum in each compartment
+```{r}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+ps
+
+otu.df <- data.frame(otu_table(ps), stringsAsFactors = F)
+otu.df <- data.frame(sample.name.match = row.names(otu.df), otu.df, stringsAsFactors = F)
+otu.df %>%
+  gather(key = "ASV", value = "abund", -sample.name.match) -> otu.l
+sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+sam %>%
+  select(sample.name.match, Tissue) -> sam.indx
+
+sam %>%
+  filter(Tissue == "L") %>%
+  dim()
+
+sam %>%
+  filter(Tissue == "R") %>%
+  dim()
+
+sam %>%
+  filter(Tissue == "S") %>%
+  dim()
+
+tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+tax %>%
+  select(ASV, phylum) -> tax.indx
+otu.l %>%
+  left_join(sam.indx) %>%
+  left_join(tax.indx) -> otu.l
+
+otu.l %>%
+  filter(abund > 0) %>%
+  group_by(phylum) %>%
+  summarize(n = length(unique(ASV))) -> all
+all
+sum(all$n)
+all[all$phylum == "p__Glomeromycota","n"]
+76/sum(all$n)
+108/253
+
+otu.l %>%
+  filter(abund > 0) %>%
+  group_by(Tissue, phylum) %>%
+  summarize(n = length(unique(ASV))) %>%
+  spread(key = Tissue, value = n) -> summ.phy
+
+summ.phy
+total.l <- sum(summ.phy$L, na.rm = T)
+total.r <- sum(summ.phy$R, na.rm = T)
+total.s <- sum(summ.phy$S, na.rm = T)
+
+summ.phy %>%
+  mutate(L.perc = L / total.l)
+
+# most and least cosmopolitan ASVs
+head(otu.l)
+otu.l %>%
+  mutate(pres = abund > 0) %>%
+  group_by(ASV, Tissue) %>%
+  summarize(n.samps = sum(pres),
+            n.total = length(pres),
+            n.perc = n.samps/n.total) %>%
+  arrange(-n.samps) -> df.n
+df.n %>%
+  left_join(tax) -> df.n
+df.n %>%
+  mutate(Tissue1 = ifelse(Tissue == "L", "Leaf",
+                          ifelse(Tissue == "R", "Root", "Soil"))) %>%
+  separate(phylum, into = c(NA, "phylum1"), remove=F) -> df.n
+
+# p.cosmo <- ggplot(tmp, aes(x = Tissue1, y = n.perc*100, color = phylum1)) +
+#   geom_point(position = "jitter", alpha = .8) +
+#   ylab("ASV plant occupancy (%)") +
+#   xlab("Plant-associated habitat") +
+#   scale_color_discrete(name = "Phylum") +
+#   theme_bw()
+# p.cosmo
+
+# ggsave(p.cosmo, filename = file.path(out_path, "cosmoASVs.png"),
+#        dpi = 600, width = 6, height = 5)
+
+```
+
+## 1. Calculate alpha diversity
+```{r}
+
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+ps
+asv <- otu_table(ps)
+asv.df <- data.frame(asv, stringsAsFactors = F)
+asv.mat <- as.matrix(asv.df)
+
+library(picante)
+
+# calculate Faith's PD
+df.pd <- pd(asv.mat, phy_tree(ps), include.root = F) 
+df.pd$sample.name.match <- row.names(df.pd)
+sam <- data.frame(sample_data(ps))
+df.pd %>%
+  left_join(sam) -> alpha
+alpha %>%
+  group_by(Tissue) %>%
+  summarize(n = length(SR),
+            SR.mean = mean(SR),
+            SR.se = sd(SR)/sqrt(n),
+            PD.mean = mean(PD),
+            PD.se = sd(PD)/sqrt(n)) -> alpha.tab
+alpha.tab
+sum(alpha.tab$n)
+
+# summarize by mono.mixed
+colnames(alpha)
+alpha %>%
+  group_by(mono.mixed, Tissue) %>%
+  summarize(n = length(SR),
+            SR.mean = mean(SR),
+            SR.se = sd(SR)/sqrt(n),
+            PD.mean = mean(PD),
+            PD.se = sd(PD)/sqrt(n)) -> alpha.tab.mono
+alpha.tab.mono
+
+p <- ggplot(alpha.tab.mono, aes(x = mono.mixed, y = SR.mean, color = Tissue)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = SR.mean - SR.se, ymax = SR.mean + SR.se)) +
+  facet_grid(~Tissue) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+p
+# ggsave(p, filename = file.path(out_path, "SR_monomix.png"),
+#        width = 5, height = 4, dpi = 300)
+
+
+mod.sr <- lmer(SR ~ mono.mixed * Tissue + (1|Site), data = alpha)
+an.sr <- anova(mod.sr)
+an.sr
+tuk.sr <- emmeans(mod.sr, list(pairwise ~ Tissue * mono.mixed), adjust = "tukey")
+tuk.sr
+
+
+# summarize by cultivar
+alpha %>%
+  group_by(cultivar, Tissue) %>%
+  summarize(n = length(SR),
+            SR.mean = mean(SR),
+            SR.se = sd(SR)/sqrt(n),
+            PD.mean = mean(PD),
+            PD.se = sd(PD)/sqrt(n)) -> alpha.tab.cult
+alpha.tab.cult
+
+alpha %>%
+  select(Site, cultivar) %>%
+  unique()
+
+alpha.tab.cult %>%
+  filter(cultivar %in% c("Alamo","Performer")) -> tmp
+
+p <- ggplot(tmp, aes(x = cultivar, y = SR.mean, color = Tissue)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = SR.mean - SR.se, ymax = SR.mean + SR.se)) +
+  facet_grid(~Tissue) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+p
+# ggsave(p, filename = file.path(out_path, "SR_cult.png"),
+#        width = 5, height = 4, dpi = 300)
+
+alpha %>%
+  filter(cultivar %in% c("Alamo","Performer")) -> tmp
+mod.sr <- lmer(SR ~ cultivar * Tissue + (1|Site), data = tmp)
+an.sr <- anova(mod.sr)
+an.sr
+tuk.sr <- emmeans(mod.sr, list(pairwise ~ Tissue * cultivar), adjust = "tukey")
+tuk.sr
+
+
+library(lme4)
+library(lmerTest)
+library(emmeans)
+mod.sr <- lmer(SR ~ Tissue + (1|Site), data = alpha)
+sum(resid(mod.sr)^2)
+an.sr <- anova(mod.sr)
+an.sr
+su.sr <- summary(mod.sr)
+su.sr
+tuk.sr <- emmeans(mod.sr, list(pairwise ~ Tissue), adjust = "tukey")
+tuk.sr
+# capture.output(an.sr, file = file.path(out_path, "alphaDiv.txt"))
+# capture.output(su.sr, file = file.path(out_path, "alphaDiv.txt"), append = T)
+# capture.output(tuk.sr, file = file.path(out_path, "alphaDiv.txt"), append = T)
+
+mod.pd <- lmer(PD ~ Tissue + (1|Site), data = alpha)
+mod.pd
+sum(resid(mod.pd)^2)
+an.pd <- anova(mod.pd)
+an.pd
+su.pd <- summary(mod.pd)
+su.pd
+tuk.pd <- emmeans(mod.pd, list(pairwise ~ Tissue), adjust = "tukey")
+tuk.pd
+# capture.output(an.pd, file = file.path(out_path, "alphaDiv.txt"), append = T)
+# capture.output(su.pd, file = file.path(out_path, "alphaDiv.txt"), append = T)
+# capture.output(tuk.pd, file = file.path(out_path, "alphaDiv.txt"), append = T)
+
+alpha.tab
+p1 <- ggplot(alpha.tab, aes(x = Tissue, y = SR.mean, color = Tissue)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = SR.mean - SR.se,
+                    ymax = SR.mean + SR.se), width = .2) +
+  ylab("ASV richness") +
+  xlab("Plant-associated habitat") +
+  theme_classic() +
+  scale_x_discrete(labels = c("Leaf","Root","Soil")) +
+  scale_color_manual(values= tissue.colors) +
+  guides(color = F)
+p1
+
+p2 <- ggplot(alpha.tab, aes(x = Tissue, y = PD.mean, color = Tissue)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = PD.mean - PD.se,
+                    ymax = PD.mean + PD.se), width = .2) +
+  ylab("Faith's Phylgenetic Diversity") +
+  xlab("Plant-associated habitat") +
+  theme_classic()+
+  scale_x_discrete(labels = c("Leaf","Root","Soil")) +
+  scale_color_manual(values= tissue.colors) +
+  guides(color = F)
+p2
+
+library(gridExtra)
+# ggsave(
+#   file.path(out_path, "alphaDiv.png"),
+#   grid.arrange(p1 + ggtitle("a"), 
+#              p2 + ggtitle("b"), ncol = 1),
+#   width = 4,
+#   height = 6,
+#   dpi = 600
+# )
+
+
+
+```
+
+## 2. Venn diagram of ASVs shared/unique to leaf, root, soil [commented out]
+```{r}
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# 
+# ps.l <- subset_samples(ps, Tissue == "L")
+# l.asvs <- names(colSums(otu_table(ps.l))[colSums(otu_table(ps.l)) != 0])
+# 
+# ps.r <- subset_samples(ps, Tissue == "R")
+# r.asvs <- names(colSums(otu_table(ps.r))[colSums(otu_table(ps.r)) != 0])
+# 
+# ps.s <- subset_samples(ps, Tissue == "S")
+# s.asvs <- names(colSums(otu_table(ps.s))[colSums(otu_table(ps.s)) != 0])
+
+# ps.l <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# ps.r <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# ps.s <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+# 
+# ps.l
+
+
+# library(ggVennDiagram)
+# x <- list(Leaf=taxa_names(ps.l),
+#           Root=taxa_names(ps.r),
+#           Soil=taxa_names(ps.s))
+# p <- ggVennDiagram(x)
+# p
+# ggsave(p, filename = file.path(out_path, "ASVs_Tissue_venn.png"), 
+#        width = 4, height = 4, dpi = 300)
+
+```
+
+________________________________
+# D. Is there a critical distance where communities diverge/converge?
+
+1. Generate pairwise dataframes, save, and plot
+2. Breakpoint regression with spatial distance
+3. Breakpoint regression with environmental distance
+
+## 1. Generate pairwise dataframes and plot
+```{r}
+sameSite.colors <- c("gray","black")
+names(sameSite.colors) <- c(FALSE, TRUE)
+
+#load the data
+require(phyloseq)
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+ps
+vst <- readRDS(file = file.path("output/illumina/Q0", "vst_all.RData"))
+raodis <- readRDS("output/illumina/Q0/dpcoa_all_raodist.RData")
+
+# add similarity distances
+library(vegan)
+bray.dist <- distance(ps, method="bray") # careful! this doesn't work if DESeq2 is loaded
+#library(picante)
+# tree <- phy_tree(ps)
+# tree$root.edge <- 0
+# asv <- data.frame(otu_table(ps), stringsAsFactors = F)
+# phy.sor<- phylosor(samp = asv, tree = tree)
+# saveRDS(phy.sor, file = file.path(out_path, "physor_dist.RData"))
+physor.dist <- readRDS(file = file.path(out_path, "physor_dist.RData"))
+
+# add environmental distances
+sam <- data.frame(sample_data(ps))
+# load transformed environmental variables (prior to lasso filter)
+mat.t <- read.csv(file = "output/illumina/Q2/normTransformed_contvars_trim.csv",
+                  row.names = 1)
+sam %>%
+    dplyr::select(sample.name.match, SiteSamp, Site, Tissue) -> samp.tmp
+samp.tmp %>%
+  left_join(mat.t) -> samp.tmp
+samp.tmp %>%
+  dplyr::select(-c(sample.name.match, SiteSamp, Site, Tissue)) -> samp.env
+row.names(samp.env)<- samp.tmp$sample.name.match
+dist.env <- dist(samp.env, method = "euclidean")
+mat.env <- as.matrix(dist.env)
+
+env.dist.df <- extract_uniquePairDists(mat.env)
+env.dist.df %>%
+    dplyr::rename('env.dist.m'='dist') -> env.dist.df
+  
+# make dataframe
+#dist.df <- make_dist_df(ps, vst, raodis, bray.dist, physor.dist, env.dist.df)
+#saveRDS(dist.df, file = file.path(out_path, "dist_df.RData"))
+dist.df <- readRDS(file = file.path(out_path, "dist_df.RData"))
+#head(dist.df)
+range(dist.df$hav.dist.km)
+
+# # what makes leaf communities vary different at small scales?
+# colnames(dist.df)
+# dist.df %>%
+#   filter(Tissue_samp1 == "L") %>%
+#   filter(hav.dist.km < 0.38) -> tmp
+
+# check out clustered distances
+# # these are because of sites that are very close: CRE-MXG to CRE-MXT, OTO-MON to OTO-MXT
+# dist.df %>%
+#   mutate(hav.dist.km = hav.dist.m / 1000) %>%
+#   filter(hav.dist.km < 0.33) %>%
+#   filter(hav.dist.km > 0.300) -> sub
+# sub %>%
+#   group_by(sameSite) %>%
+#   summarize(n = length(samp1)) # all are comparisons between sites (not within)
+# sub %>%
+#   group_by(Site_samp1, Site_samp2) %>%
+#   summarize(n = length(samp1))
+# 16*16 # maximum number of pairs between 2 sites
+# 111+81
+# sub %>%
+#   mutate(site.pair = paste0(Site_samp1, Site_samp2)) -> sub
+# ggplot(sub, aes(x = hav.dist.km, y = vst.comm.dist, color = site.pair)) +
+#   geom_point() +
+#   scale_color_manual(values = c(1,1,2,2))
+
+```
+
+Add sitePairs
+```{r}
+#dist.df
+
+# color by site comparisons
+all.sites <- unique(c(dist.df$Site_samp1,dist.df$Site_samp2))
+all.site.pairs <- data.frame(t(combn(all.sites, 2)))
+all.site.pairs$pairs <- paste0(all.site.pairs$X1, "__", all.site.pairs$X2)
+pairs <- all.site.pairs$pairs
+
+dist.df %>%
+  mutate(site.pairs = paste0(Site_samp1,"__", Site_samp2)) %>%
+  mutate(site.pairs.rev = paste0(Site_samp2, "__", Site_samp1)) %>%
+  mutate(site.pairs = ifelse(site.pairs %in% pairs, site.pairs, site.pairs.rev)) %>%
+  mutate(site.pairs = ifelse(sameSite == TRUE, Site_samp1, site.pairs)) %>%
+  dplyr::select(-site.pairs.rev) -> dist.df
+
+```
+
+## 2. Breakpoint regression with spatial distance
+Fit segmented regression models -- Bray
+```{r}
+#library("segmented")
+str(dist.df)
+dist.df$Tissue <- factor(dist.df$Tissue_samp1)
+dist.df$bray.sim <- 1- dist.df$bray.comm.dist
+
+# build the dummy variables for the Tissue x distance interaction
+require(segmented)
+X <- model.matrix(~ 0 + dist.df$Tissue) * dist.df$hav.dist.km
+max(which(dist.df$Tissue == "L"))
+min(which(dist.df$Tissue == "R"))
+hav.L <- X[,1]
+hav.R <- X[,2]
+hav.S <- X[,3]
+mod <- lm(bray.sim ~ 0 + Tissue + hav.L + hav.R + hav.S, 
+          data = dist.df)
+mod.seg <- segmented(mod, seg.Z = ~hav.L + hav.R + hav.S, 
+                         psi = list(hav.L = 1, 
+                                    hav.R = 1,
+                                    hav.S = 1))
+summary(mod.seg)
+coef(mod.seg)
+capture.output(summary(mod.seg), file = file.path(out_path,"segBray.txt"))
+tmp <- summary(mod.seg)
+tmp$psi[1,2]
+
+#U1 = difference-in-slope parameter of the variable hav.L
+# to test the significance of difference in slopes for each Tissue...
+dt.l <- davies.test(mod, seg.Z = ~hav.L, k = 10, values = tmp$psi[1,2])
+dt.r <- davies.test(mod, seg.Z = ~hav.R, k = 10, values = tmp$psi[2,2])
+dt.s <- davies.test(mod, seg.Z = ~hav.S, k = 10, values = tmp$psi[3,2])
+capture.output(dt.l, file = file.path(out_path,"segBray.txt"), append = T)
+capture.output(dt.r, file = file.path(out_path,"segBray.txt"), append = T)
+capture.output(dt.s, file = file.path(out_path,"segBray.txt"), append = T)
+# yes, all signif different
+
+# save the CIs for breakpoints
+brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+      confint.segmented(mod.seg, "hav.R"),
+      confint.segmented(mod.seg, "hav.S"))
+brks <- data.frame(brks, stringsAsFactors = F)
+brks
+brks$Tissue <- c("L","R","S")
+brks
+capture.output(brks, file = file.path(out_path,"segBray.txt"), append = T)
+# save the CIs for slopes
+slopes <- list_to_df(slope(mod.seg))
+capture.output(slopes, file = file.path(out_path,"segBray.txt"), append = T)
+
+# break the regression
+#library(lsmeans)
+break.here <- mean(brks[,"Est."])
+break.here
+dist.df %>%
+  filter(hav.dist.km < break.here) -> dist.dfa
+dist.df %>%
+  filter(hav.dist.km > break.here) -> dist.dfb
+
+# posthoc t-test to test difference in means - lower
+moda <- lm(bray.sim ~ Tissue * hav.dist.km, data = dist.dfa)
+summary(moda)
+capture.output(summary(moda), 
+               file = file.path(out_path,"segBray.txt"), append = T)
+
+library(lsmeans)
+moda.lst <- lstrends(moda, ~ Tissue, var = "hav.dist.km")
+pairs(moda.lst)   # comparisons of slopes
+TukeyHSD(aov(moda), which = "Tissue") # comparison of intercepts
+capture.output(summary(moda), file = file.path(out_path,"segBray.txt"), append = T)
+capture.output(pairs(moda.lst), file = file.path(out_path,"segBray.txt"), append = T)
+capture.output(TukeyHSD(aov(moda), which = "Tissue"), 
+               file = file.path(out_path,"segBray.txt"), append = T)
+
+# posthoc t-test to test difference in means - upper
+modb <- lm(bray.sim ~ Tissue * hav.dist.km, data = dist.dfb)
+summary(modb)
+capture.output(summary(modb), 
+               file = file.path(out_path,"segBray.txt"), append = T)
+
+modb.lst <- lstrends(modb, ~ Tissue, var = "hav.dist.km")
+pairs(modb.lst)   # comparisons of slopes
+TukeyHSD(aov(modb), which = "Tissue") # comparison of intercepts
+capture.output(summary(modb), file = file.path(out_path,"segBray.txt"), append = T)
+capture.output(pairs(modb.lst), file = file.path(out_path,"segBray.txt"), append = T)
+capture.output(TukeyHSD(aov(modb), which = "Tissue"), 
+               file = file.path(out_path,"segBray.txt"), append = T)
+
+# use predict to show the fitted model
+pred <- predict(mod.seg, se.fit = TRUE)
+dist.df$pred <- pred$fit
+dist.df$pred.se <- pred$se.fit
+
+p <- ggplot(dist.df, aes(x = hav.dist.km, y = pred, 
+                    fill = Tissue, color = Tissue, shape = sameSite)) +
+  geom_point(aes(y = bray.sim), alpha = .2) +
+  geom_ribbon(aes(ymin = pred - pred.se, ymax = pred + pred.se), 
+              alpha = .8) +
+  #geom_line()+
+  theme_classic() +
+  ylab("Bray-Curtis similarity") +
+  xlab("Spatial distance (km)") +
+  scale_color_manual(values = tissue.colors) +
+  scale_fill_manual(values = tissue.colors)
+p
+
+# add error around breaks
+brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+      confint.segmented(mod.seg, "hav.R"),
+      confint.segmented(mod.seg, "hav.S"))
+brks <- data.frame(brks, stringsAsFactors = F)
+brks$Tissue <- c("L","R","S")
+brks
+hav.l<- brks[1,'Est.']
+hav.r<- brks[2,'Est.']
+hav.s<- brks[3,'Est.']
+y.l <- coef(mod.seg)['TissueL'] + hav.l *coef(mod.seg)['hav.L'] 
+y.r <- coef(mod.seg)['TissueR'] + hav.r * coef(mod.seg)['hav.R'] 
+y.s <- coef(mod.seg)['TissueS'] + hav.s * coef(mod.seg)['hav.S'] 
+brks$y <- c(y.l, y.r, y.s)
+colnames(brks)
+brks
+p +
+  xlim(c(0,.7)) +
+  geom_errorbarh(data = brks,
+                 aes(xmin = CI.95...low, 
+                     xmax = CI.95...up,
+                     y = y), color = "black", height = .05,
+                 inherit.aes = F) +
+  geom_point(data = brks, 
+             aes(x = Est., y = y), 
+             size = 5, pch = 16, fill = "white",
+             inherit.aes = F) -> p.sub
+p.sub
+
+library(gridExtra)
+
+# ggsave(p + guides(fill = F, shape = F, color = F),
+#        filename = file.path(out_path,"dist_breaks_bray_full.png"),
+#        width = 5, height = 4,
+#        dpi = 600)
+# 
+# ggsave(p.sub + guides(fill = F, shape = F, color = F),
+#        filename = file.path(out_path,"dist_breaks_bray_inset.png"),
+#        width = 5, height = 4,
+#        dpi = 600)
+# 
+# library(cowplot)
+# p.leg<- get_legend(p)
+# ggsave(plot_grid(p.leg),
+#        filename = file.path(out_path,"dist_breaks_bray_legend.png"),
+#        width = 5, height = 4,
+#        dpi = 300)
+
+```
+
+Fit segmented regression models -- Phylosor
+```{r}
+#library("segmented")
+str(dist.df)
+dist.df$Tissue <- factor(dist.df$Tissue_samp1)
+
+# build the dummy variables for the Tissue x distance interaction
+require(segmented)
+X <- model.matrix(~ 0 + dist.df$Tissue) * dist.df$hav.dist.km
+max(which(dist.df$Tissue == "L"))
+min(which(dist.df$Tissue == "R"))
+hav.L <- X[,1]
+hav.R <- X[,2]
+hav.S <- X[,3]
+colnames(dist.df)
+mod <- lm(physor.comm.dist ~ 0 + Tissue + hav.L + hav.R + hav.S, 
+          data = dist.df)
+mod
+mod.seg <- segmented(mod, seg.Z = ~hav.L + hav.R + hav.S, 
+                         psi = list(hav.L = 1, 
+                                    hav.R = 1,
+                                    hav.S = 1))
+summary(mod.seg)
+tmp <- summary(mod.seg)
+tmp$psi[1,2]
+
+capture.output(summary(mod.seg), file = file.path(out_path,"segPhysor.txt"))
+#U1 = difference-in-slope parameter of the variable hav.L
+
+# to test the significance of difference in slopes for each Tissue...
+dt.l <- davies.test(mod, seg.Z = ~hav.L, k = 10, values = tmp$psi[1,2])
+dt.r <- davies.test(mod, seg.Z = ~hav.R, k = 10, values = tmp$psi[2,2])
+dt.s <- davies.test(mod, seg.Z = ~hav.S, k = 10, values = tmp$psi[3,2])
+capture.output(dt.l, file = file.path(out_path,"segPhysor.txt"), append = T)
+capture.output(dt.r, file = file.path(out_path,"segPhysor.txt"), append = T)
+capture.output(dt.s, file = file.path(out_path,"segPhysor.txt"), append = T)
+
+# save the CIs for breakpoints
+brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+      confint.segmented(mod.seg, "hav.R"),
+      confint.segmented(mod.seg, "hav.S"))
+brks <- data.frame(brks, stringsAsFactors = F)
+brks$Tissue <- c("L","R","S")
+brks
+brks$Est. - brks$CI.95...up
+brks$Est. - brks$CI.95...low
+
+capture.output(brks, file = file.path(out_path,"segPhysor.txt"), append = T)
+# save the CIs for slopes
+slopes <- list_to_df(slope(mod.seg))
+capture.output(slopes, file = file.path(out_path,"segPhysor.txt"), append = T)
+
+# break the regression
+#library(lsmeans)
+break.here <- mean(brks[,"Est."])
+break.here
+dist.df %>%
+  filter(hav.dist.km < break.here) -> dist.dfa
+dist.df %>%
+  filter(hav.dist.km > break.here) -> dist.dfb
+
+# posthoc t-test to test difference in means - lower
+moda <- lm(physor.comm.dist ~ Tissue * hav.dist.km, data = dist.dfa)
+summary(moda)
+capture.output(summary(moda), 
+               file = file.path(out_path,"segPhysor.txt"), append = T)
+
+pred.a <- predict(moda)
+pred.a
+moda.lst <- lstrends(moda, ~ Tissue, var = "hav.dist.km")
+moda.lst
+pairs(moda.lst)   # comparisons of slopes
+TukeyHSD(aov(moda), which = "Tissue") # comparison of intercepts
+capture.output(summary(moda), file = file.path(out_path,"segPhysor.txt"), append = T)
+capture.output(pairs(moda.lst), file = file.path(out_path,"segPhysor.txt"), append = T)
+capture.output(TukeyHSD(aov(moda), which = "Tissue"), 
+               file = file.path(out_path,"segPhysor.txt"), append = T)
+
+# posthoc t-test to test difference in means - upper
+modb <- lm(physor.comm.dist ~ Tissue * hav.dist.km, data = dist.dfb)
+summary(modb)
+capture.output(summary(modb), 
+               file = file.path(out_path,"segPhysor.txt"), append = T)
+modb.lst <- lstrends(modb, ~ Tissue, var = "hav.dist.km")
+pairs(modb.lst)   # comparisons of slopes
+TukeyHSD(aov(modb), which = "Tissue") # comparison of intercepts
+capture.output(summary(modb), file = file.path(out_path,"segPhysor.txt"), append = T)
+capture.output(pairs(modb.lst), file = file.path(out_path,"segPhysor.txt"), append = T)
+capture.output(TukeyHSD(aov(modb), which = "Tissue"), 
+               file = file.path(out_path,"segPhysor.txt"), append = T)
+
+# use predict to show the fitted model
+pred <- predict(mod.seg, se.fit = TRUE)
+mod.seg
+dist.df$pred <- pred$fit
+dist.df$pred.se <- pred$se.fit
+dist.df$pred.before <- NA
+dist.df[dist.df$hav.dist.km < break.here,"pred.before"] <- pred.a
+
+p <- ggplot(dist.df, aes(x = hav.dist.km, y = pred, 
+                    fill = Tissue, color = Tissue, shape = sameSite)) +
+  geom_point(aes(y = physor.comm.dist), alpha = .2) +
+  geom_ribbon(aes(ymin = pred - pred.se, ymax = pred + pred.se), 
+              alpha = .8) +
+  #geom_line()+
+  theme_classic() +
+  ylab("Phylogenetic community similarity") +
+  xlab("Spatial distance (km)") +
+  scale_color_manual(values = tissue.colors) +
+  scale_fill_manual(values = tissue.colors)
+#p
+
+p + xlim(c(0,.7)) +
+  geom_line(aes(y = pred.before, x = hav.dist.km, color = Tissue), inherit.aes = F)
+  
+
+# add error around breaks
+brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+      confint.segmented(mod.seg, "hav.R"),
+      confint.segmented(mod.seg, "hav.S"))
+brks <- data.frame(brks, stringsAsFactors = F)
+brks$Tissue <- c("L","R","S")
+brks
+hav.l<- brks[1,'Est.']
+hav.r<- brks[2,'Est.']
+hav.s<- brks[3,'Est.']
+
+y.l <- coef(mod.seg)['TissueL'] + hav.l *coef(mod.seg)['hav.L'] 
+y.r <- coef(mod.seg)['TissueR'] + hav.r * coef(mod.seg)['hav.R'] 
+y.s <- coef(mod.seg)['TissueS'] + hav.s * coef(mod.seg)['hav.S'] 
+brks$y <- c(y.l, y.r, y.s)
+colnames(brks)
+brks
+p +
+  xlim(c(0,.7)) +
+  geom_errorbarh(data = brks,
+                 aes(xmin = CI.95...low, 
+                     xmax = CI.95...up,
+                     y = y), color = "black", height = .05,
+                 inherit.aes = F) +
+  geom_point(data = brks, 
+             aes(x = Est., y = y), 
+             size = 5, pch = 16, fill = "white",
+             inherit.aes = F) -> p.sub
+p.sub
+# 
+# ggsave(p + guides(fill = F, shape = F, color = F),
+#        filename = file.path(out_path,"dist_breaks_physor_full.png"),
+#        width = 5, height = 4,
+#        dpi = 600)
+# 
+# ggsave(p.sub + guides(fill = F, shape = F, color = F),
+#        filename = file.path(out_path,"dist_breaks_physor_inset.png"),
+#        width = 5, height = 4,
+#        dpi = 600)
+# 
+# library(cowplot)
+# p.leg<- get_legend(p)
+# ggsave(plot_grid(p.leg),
+#        filename = file.path(out_path,"dist_breaks_physor_legend.png"),
+#        width = 5, height = 4,
+#        dpi = 300)
+
+```
+
+#### Follow-ups
+
+Examine just within-site distances [commented out]
+```{r}
+# dist.df %>%
+#   filter(sameSite == TRUE) -> dist.df.s
+# 
+# ggplot(dist.df.s, aes(x = hav.dist.km, y = physor.comm.dist)) +
+#   geom_point() +
+#   facet_grid(~Tissue_samp1)
+# 
+# library(lme4)
+# library(lmerTest)
+# library(lsmeans)
+# mod <- lmer(physor.comm.dist ~ Tissue_samp1 * hav.dist.km + (1|Site_samp1), data = dist.df.s)
+# summary(mod)
+# capture.output(summary(mod), 
+#                file = file.path(out_path,"segPhysor_withinSite.txt"))
+# capture.output(anova(mod), 
+#                file = file.path(out_path,"segPhysor_withinSite.txt"),
+#                append = T)
+# capture.output(emmeans(mod, list(pairwise ~ Tissue_samp1), adjust = "tukey"),
+#                file = file.path(out_path,"segPhysor_withinSite.txt"),
+#                append = T)
+# emmeans(mod, list(pairwise ~ Tissue_samp1), adjust = "tukey")
+# trend <- lstrends(mod, ~ Tissue_samp1, var = "hav.dist.km")
+# capture.output(trend, 
+#                file = file.path(out_path,"segPhysor_withinSite.txt"), 
+#                append = T)
+# capture.output(pairs(trend), 
+#                file = file.path(out_path,"segPhysor_withinSite.txt"), 
+#                append = T)
+# 
+# sd(residuals(mod))/sqrt(length(residuals(mod)))
+# mod
+# summary(mod)
+# 
+# library(MuMIn)
+# r.squaredGLMM(mod)
+# 
+# 
+# # add environmental distances
+# sam <- data.frame(sample_data(ps))
+# # load transformed environmental variables (prior to lasso filter)
+# mat.t <- read.csv(file = "output/illumina/Q2/normTransformed_contvars_trim.csv",
+#                   row.names = 1)
+# sam %>%
+#     dplyr::select(sample.name.match, SiteSamp, Site, Tissue) -> samp.tmp
+# samp.tmp %>%
+#   left_join(mat.t) -> samp.tmp
+# samp.tmp %>%
+#   dplyr::select(-c(sample.name.match, SiteSamp, Site, Tissue)) -> samp.env
+# row.names(samp.env)<- samp.tmp$sample.name.match
+# dist.env <- dist(samp.env, method = "euclidean")
+# mat.env <- as.matrix(dist.env)
+# env.dist.df <- extract_uniquePairDists(mat.env)
+# env.dist.df %>%
+#     dplyr::rename('env.dist.m'='dist') -> env.dist.df
+
+```
+
+Examine leaf communities at long distances... potential environmental drivers? [commented out]
+```{r}
+# dist.df %>%
+#   filter(Tissue_samp1 == "L") -> dist.df.l
+# 
+# # color by site comparisons
+# all.sites <- unique(c(dist.df$Site_samp1,dist.df$Site_samp2))
+# all.site.pairs <- data.frame(t(combn(all.sites, 2)))
+# all.site.pairs$pairs <- paste0(all.site.pairs$X1, "__", all.site.pairs$X2)
+# pairs <- all.site.pairs$pairs
+# 
+# dist.df.l %>%
+#   mutate(site.pairs = paste0(Site_samp1,"__", Site_samp2)) %>%
+#   mutate(site.pairs.rev = paste0(Site_samp2, "__", Site_samp1)) %>%
+#   mutate(site.pairs = ifelse(site.pairs %in% pairs, site.pairs, site.pairs.rev)) %>%
+#   mutate(site.pairs = ifelse(sameSite == TRUE, Site_samp1, site.pairs)) %>%
+#   dplyr::select(-site.pairs.rev) -> tmp
+# 
+# ggplot(tmp, aes(x = hav.dist.km, y = physor.comm.dist, color = site.pairs)) +
+#   geom_point() +
+#   guides(color = F)
+# ggplot(tmp, aes(x = hav.dist.km, y = reorder(site.pairs, hav.dist.km), 
+#                 color = physor.comm.dist)) +
+#   geom_point()
+# 
+# ggplot(tmp, aes(x = hav.dist.km, y = reorder(site.pairs, hav.dist.km), 
+#                 color = env.dist.m)) +
+#   geom_point()
+# ggplot(tmp, aes(x = hav.dist.km, y = env.dist.m, 
+#                 color = site.pairs)) +
+#   geom_point() +
+#   guides(color = F)
+# 
+# #### what drives environmental distances at long distances?
+# sam <- data.frame(sample_data(ps))
+# # load transformed environmental variables (prior to lasso filter)
+# mat.t <- read.csv(file = "output/illumina/Q2/normTransformed_contvars_trim.csv",
+#                   row.names = 1)
+# sam %>%
+#     dplyr::select(sample.name.match, SiteSamp, Site, Tissue) %>%
+#   left_join(mat.t) %>%
+#   filter(Tissue == "L") -> samp.tmp
+# 
+# #K
+# dist <- dist(samp.tmp$K, method = "euclidean")
+# mat <- as.matrix(dist)
+# row.names(mat) <- samp.tmp$sample.name.match
+# colnames(mat) <- samp.tmp$sample.name.match
+# mat.df.k <- extract_uniquePairDists(mat)
+# colnames(mat.df.k) <- c("samp1","samp2","k.dist")
+# 
+# #P
+# dist <- dist(samp.tmp$P, method = "euclidean")
+# mat <- as.matrix(dist)
+# row.names(mat) <- samp.tmp$sample.name.match
+# colnames(mat) <- samp.tmp$sample.name.match
+# mat.df.p <- extract_uniquePairDists(mat)
+# colnames(mat.df.p) <- c("samp1","samp2","p.dist")
+# 
+# #pH
+# dist <- dist(samp.tmp$ph, method = "euclidean")
+# mat <- as.matrix(dist)
+# row.names(mat) <- samp.tmp$sample.name.match
+# colnames(mat) <- samp.tmp$sample.name.match
+# mat.df.ph <- extract_uniquePairDists(mat)
+# colnames(mat.df.ph) <- c("samp1","samp2","ph.dist")
+# 
+# #height
+# dist <- dist(samp.tmp$max.height.m, method = "euclidean")
+# mat <- as.matrix(dist)
+# row.names(mat) <- samp.tmp$sample.name.match
+# colnames(mat) <- samp.tmp$sample.name.match
+# mat.df.h <- extract_uniquePairDists(mat)
+# colnames(mat.df.h) <- c("samp1","samp2","height.dist")
+# 
+# # combine
+# tmp %>%
+#   left_join(mat.df.k) %>%
+#   left_join(mat.df.p) %>%
+#   left_join(mat.df.ph) %>%
+#   left_join(mat.df.h) -> tmp.env
+# 
+# ggplot(tmp.env, aes(x = hav.dist.km, y = k.dist, 
+#                 color = site.pairs)) +
+#   geom_point() +
+#   guides(color = F)
+# tmp.env %>%
+#   filter(hav.dist.km > 400) -> sub
+# tmp.env %>%
+#   group_by(site.pairs) %>%
+#   summarize(n = length(k.dist),
+#             mean = mean(k.dist),
+#             sd = sd(k.dist)) %>%
+#   arrange(-mean)
+# 
+# tmp.env %>%
+#   group_by(site.pairs) %>%
+#   summarize(n = length(hav.dist.km),
+#             mean = mean(hav.dist.km)) %>%
+#   arrange(-mean)
+# 
+# samp.tmp %>%
+#   group_by(Site) %>%
+#   summarize(n = length(K),
+#             mean = mean(K),
+#             sd = sd(K),
+#             se = sd/sqrt(n)) %>%
+#   arrange(mean)
+# 
+# 
+# ggplot(tmp.env, aes(x = hav.dist.km, y = p.dist, 
+#                 color = site.pairs)) +
+#   geom_point() +
+#   guides(color = F)
+# ggplot(tmp.env, aes(x = hav.dist.km, y = ph.dist, 
+#                 color = site.pairs)) +
+#   geom_point() +
+#   guides(color = F)
+# ggplot(tmp.env, aes(x = hav.dist.km, y = height.dist, 
+#                 color = site.pairs)) +
+#   geom_point() +
+#   guides(color = F)
+
+```
+
+
+## 3. Breakpoint regression with environmental distance
+
+Fit segmented regression models -- Phylosor w/environmental distance [commented out]
+```{r}
+# #library("segmented")
+# str(dist.df)
+# dist.df$Tissue <- factor(dist.df$Tissue_samp1)
+# 
+# # build the dummy variables for the Tissue x distance interaction
+# require(segmented)
+# colnames(dist.df)
+# X <- model.matrix(~ 0 + dist.df$Tissue) * dist.df$env.dist.m
+# max(which(dist.df$Tissue == "L"))
+# min(which(dist.df$Tissue == "R"))
+# hav.L <- X[,1]
+# hav.R <- X[,2]
+# hav.S <- X[,3]
+# mod <- lm(physor.comm.dist ~ 0 + Tissue + hav.L + hav.R + hav.S, 
+#           data = dist.df)
+# mod
+# mod.seg <- segmented(mod, seg.Z = ~hav.L + hav.R + hav.S, 
+#                          psi = list(hav.L = 1, 
+#                                     hav.R = 1,
+#                                     hav.S = 1))
+# summary(mod.seg)
+# tmp <- summary(mod.seg)
+# tmp$psi[1,2]
+# 
+# capture.output(summary(mod.seg), file = file.path(out_path,"segPhysor_env.txt"))
+# #U1 = difference-in-slope parameter of the variable hav.L
+# 
+# # to test the significance of difference in slopes for each Tissue...
+# dt.l <- davies.test(mod, seg.Z = ~hav.L, k = 10, values = tmp$psi[1,2])
+# dt.r <- davies.test(mod, seg.Z = ~hav.R, k = 10, values = tmp$psi[2,2])
+# dt.s <- davies.test(mod, seg.Z = ~hav.S, k = 10, values = tmp$psi[3,2])
+# dt.l
+# dt.r
+# dt.s
+# #r
+# # rearrange terms
+# # r2 for each separate mode
+# # r2 for SEMs?
+# # 
+# capture.output(dt.l, file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(dt.r, file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(dt.s, file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# 
+# # save the CIs for breakpoints
+# brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+#       confint.segmented(mod.seg, "hav.R"),
+#       confint.segmented(mod.seg, "hav.S"))
+# brks <- data.frame(brks, stringsAsFactors = F)
+# brks$Tissue <- c("L","R","S")
+# brks
+# brks$Est. - brks$CI.95...up
+# brks$Est. - brks$CI.95...low
+# 
+# capture.output(brks, file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# # save the CIs for slopes
+# slopes <- list_to_df(slope(mod.seg))
+# capture.output(slopes, file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# 
+# # break the regression
+# #library(lsmeans)
+# break.here <- mean(brks[,"Est."])
+# break.here
+# dist.df %>%
+#   filter(env.dist.m < break.here) -> dist.dfa
+# dist.df %>%
+#   filter(env.dist.m > break.here) -> dist.dfb
+# 
+# # posthoc t-test to test difference in means - lower
+# moda <- lm(physor.comm.dist ~ Tissue * env.dist.m, data = dist.dfa)
+# summary(moda)
+# pred.a <- predict(moda)
+# pred.a
+# library(lsmeans)
+# moda.lst <- lstrends(moda, ~ Tissue, var = "env.dist.m")
+# moda.lst
+# pairs(moda.lst)   # comparisons of slopes
+# TukeyHSD(aov(moda), which = "Tissue") # comparison of intercepts
+# capture.output(summary(moda), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(pairs(moda.lst), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(TukeyHSD(aov(moda), which = "Tissue"), 
+#                file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# 
+# # posthoc t-test to test difference in means - upper
+# modb <- lm(physor.comm.dist ~ Tissue * env.dist.m, data = dist.dfb)
+# summary(modb)
+# modb.lst <- lstrends(modb, ~ Tissue, var = "env.dist.m")
+# pairs(modb.lst)   # comparisons of slopes
+# TukeyHSD(aov(modb), which = "Tissue") # comparison of intercepts
+# capture.output(summary(modb), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(pairs(modb.lst), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(TukeyHSD(aov(modb), which = "Tissue"), 
+#                file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# 
+# # use predict to show the fitted model
+# pred <- predict(mod.seg, se.fit = TRUE)
+# mod.seg
+# dist.df$pred <- pred$fit
+# dist.df$pred.se <- pred$se.fit
+# dist.df$pred.before <- NA
+# dist.df[dist.df$env.dist.m < break.here,"pred.before"] <- pred.a
+# 
+# p <- ggplot(dist.df, aes(x = env.dist.m, y = pred, 
+#                     fill = Tissue, color = Tissue, shape = sameSite)) +
+#   geom_point(aes(y = physor.comm.dist), alpha = .2) +
+#   geom_ribbon(aes(ymin = pred - pred.se, ymax = pred + pred.se), 
+#               alpha = .8) +
+#   #geom_line()+
+#   theme_classic() +
+#   ylab("Phylogenetic community similarity") +
+#   xlab("Environmental distance (Euclidean)")
+# p
+# 
+# # p + xlim(c(0,.7)) +
+# #   geom_line(aes(y = pred.before, x = hav.dist.km, color = Tissue), inherit.aes = F)
+# 
+# # add error around breaks
+# brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+#       confint.segmented(mod.seg, "hav.R"),
+#       confint.segmented(mod.seg, "hav.S"))
+# brks <- data.frame(brks, stringsAsFactors = F)
+# brks$Tissue <- c("L","R","S")
+# brks
+# hav.l<- brks[1,'Est.']
+# hav.r<- brks[2,'Est.']
+# hav.s<- brks[3,'Est.']
+# 
+# y.l <- coef(mod.seg)['TissueL'] + hav.l *coef(mod.seg)['hav.L'] 
+# y.r <- coef(mod.seg)['TissueR'] + hav.r * coef(mod.seg)['hav.R'] 
+# y.s <- coef(mod.seg)['TissueS'] + hav.s * coef(mod.seg)['hav.S'] 
+# brks$y <- c(y.l, y.r, y.s)
+# colnames(brks)
+# brks
+# p +
+#   geom_errorbarh(data = brks,
+#                  aes(xmin = CI.95...low, 
+#                      xmax = CI.95...up,
+#                      y = y), color = "black", height = .05,
+#                  inherit.aes = F) +
+#   geom_point(data = brks, 
+#              aes(x = Est., y = y), 
+#              size = 5, pch = 16, fill = "white",
+#              inherit.aes = F) -> p.sub
+# p.sub
+# 
+# 
+# pdf(file = file.path(out_path, "dist_breaks_physor.pdf"), width = 10, height = 4)
+# grid.arrange(
+#   p,
+#   p.sub, ncol = 2
+# )
+# dev.off()
+
+```
+
+Fit segmented regression models -- Bray w/environmental distance [commented out]
+```{r}
+# #library("segmented")
+# str(dist.df)
+# dist.df$Tissue <- factor(dist.df$Tissue_samp1)
+# 
+# # build the dummy variables for the Tissue x distance interaction
+# require(segmented)
+# colnames(dist.df)
+# X <- model.matrix(~ 0 + dist.df$Tissue) * dist.df$env.dist.m
+# max(which(dist.df$Tissue == "L"))
+# min(which(dist.df$Tissue == "R"))
+# hav.L <- X[,1]
+# hav.R <- X[,2]
+# hav.S <- X[,3]
+# mod <- lm(bray.comm.dist ~ 0 + Tissue + hav.L + hav.R + hav.S, 
+#           data = dist.df)
+# mod
+# mod.seg <- segmented(mod, seg.Z = ~hav.L + hav.R + hav.S, 
+#                          psi = list(hav.L = 1, 
+#                                     hav.R = 1,
+#                                     hav.S = 1))
+# summary(mod.seg)
+# tmp <- summary(mod.seg)
+# tmp$psi[1,2]
+# 
+# capture.output(summary(mod.seg), file = file.path(out_path,"segBray_env.txt"))
+# #U1 = difference-in-slope parameter of the variable hav.L
+# 
+# # to test the significance of difference in slopes for each Tissue...
+# dt.l <- davies.test(mod, seg.Z = ~hav.L, k = 10, values = tmp$psi[1,2])
+# dt.r <- davies.test(mod, seg.Z = ~hav.R, k = 10, values = tmp$psi[2,2])
+# dt.s <- davies.test(mod, seg.Z = ~hav.S, k = 10, values = tmp$psi[3,2])
+# dt.l
+# dt.r
+# dt.s
+# #r
+# # rearrange terms
+# # r2 for each separate mode
+# # r2 for SEMs?
+# # 
+# capture.output(dt.l, file = file.path(out_path,"segBray_env.txt"), append = T)
+# capture.output(dt.r, file = file.path(out_path,"segBray_env.txt"), append = T)
+# capture.output(dt.s, file = file.path(out_path,"segBray_env.txt"), append = T)
+# 
+# # save the CIs for breakpoints
+# brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+#       confint.segmented(mod.seg, "hav.R"),
+#       confint.segmented(mod.seg, "hav.S"))
+# brks <- data.frame(brks, stringsAsFactors = F)
+# brks$Tissue <- c("L","R","S")
+# brks
+# brks$Est. - brks$CI.95...up
+# brks$Est. - brks$CI.95...low
+# 
+# capture.output(brks, file = file.path(out_path,"segBray_env.txt"), append = T)
+# # save the CIs for slopes
+# slopes <- list_to_df(slope(mod.seg))
+# capture.output(slopes, file = file.path(out_path,"segBray_env.txt"), append = T)
+# 
+# # break the regression
+# #library(lsmeans)
+# break.here <- mean(brks[,"Est."])
+# break.here
+# dist.df %>%
+#   filter(hav.dist.km < break.here) -> dist.dfa
+# dist.df %>%
+#   filter(hav.dist.km > break.here) -> dist.dfb
+# 
+# # posthoc t-test to test difference in means - lower
+# moda <- lm(physor.comm.dist ~ Tissue * env.dist.m, data = dist.dfa)
+# summary(moda)
+# pred.a <- predict(moda)
+# pred.a
+# library(lsmeans)
+# moda.lst <- lstrends(moda, ~ Tissue, var = "env.dist.m")
+# moda.lst
+# pairs(moda.lst)   # comparisons of slopes
+# TukeyHSD(aov(moda), which = "Tissue") # comparison of intercepts
+# capture.output(summary(moda), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(pairs(moda.lst), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(TukeyHSD(aov(moda), which = "Tissue"), 
+#                file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# 
+# # posthoc t-test to test difference in means - upper
+# modb <- lm(physor.comm.dist ~ Tissue * env.dist.m, data = dist.dfb)
+# summary(modb)
+# modb.lst <- lstrends(modb, ~ Tissue, var = "env.dist.m")
+# pairs(modb.lst)   # comparisons of slopes
+# TukeyHSD(aov(modb), which = "Tissue") # comparison of intercepts
+# capture.output(summary(modb), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(pairs(modb.lst), file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# capture.output(TukeyHSD(aov(modb), which = "Tissue"), 
+#                file = file.path(out_path,"segPhysor_env.txt"), append = T)
+# 
+# # use predict to show the fitted model
+# pred <- predict(mod.seg, se.fit = TRUE)
+# mod.seg
+# dist.df$pred <- pred$fit
+# dist.df$pred.se <- pred$se.fit
+# dist.df$pred.before <- NA
+# dist.df[dist.df$hav.dist.km < break.here,"pred.before"] <- pred.a
+# 
+# p <- ggplot(dist.df, aes(x = env.dist.m, y = pred, 
+#                     fill = Tissue, color = Tissue, shape = sameSite)) +
+#   geom_point(aes(y = physor.comm.dist), alpha = .2) +
+#   geom_ribbon(aes(ymin = pred - pred.se, ymax = pred + pred.se), 
+#               alpha = .8) +
+#   #geom_line()+
+#   theme_classic() +
+#   ylab("Phylogenetic community similarity") +
+#   xlab("Environmental distance (Euclidean)")
+# p
+# 
+# # p + xlim(c(0,.7)) +
+# #   geom_line(aes(y = pred.before, x = hav.dist.km, color = Tissue), inherit.aes = F)
+#   
+# 
+# # add error around breaks
+# brks <- rbind(confint.segmented(mod.seg, "hav.L"),
+#       confint.segmented(mod.seg, "hav.R"),
+#       confint.segmented(mod.seg, "hav.S"))
+# brks <- data.frame(brks, stringsAsFactors = F)
+# brks$Tissue <- c("L","R","S")
+# brks
+# hav.l<- brks[1,'Est.']
+# hav.r<- brks[2,'Est.']
+# hav.s<- brks[3,'Est.']
+# 
+# y.l <- coef(mod.seg)['TissueL'] + hav.l *coef(mod.seg)['hav.L'] 
+# y.r <- coef(mod.seg)['TissueR'] + hav.r * coef(mod.seg)['hav.R'] 
+# y.s <- coef(mod.seg)['TissueS'] + hav.s * coef(mod.seg)['hav.S'] 
+# brks$y <- c(y.l, y.r, y.s)
+# colnames(brks)
+# brks
+# p +
+#   xlim(c(0,.7)) +
+#   geom_errorbarh(data = brks,
+#                  aes(xmin = CI.95...low, 
+#                      xmax = CI.95...up,
+#                      y = y), color = "black", height = .05,
+#                  inherit.aes = F) +
+#   geom_point(data = brks, 
+#              aes(x = Est., y = y), 
+#              size = 5, pch = 16, fill = "white",
+#              inherit.aes = F) -> p.sub
+# p.sub
+# 
+# 
+# pdf(file = file.path(out_path, "dist_breaks_physor.pdf"), width = 10, height = 4)
+# grid.arrange(
+#   p,
+#   p.sub, ncol = 2
+# )
+# dev.off()
+
+```
+
+Plot DPCoA of the mixed tree sites w/ nearby sites [commented out]
+```{r}
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+# df.sam <- read.csv(file = file.path(out_path, "sample_dpcoaScores.csv"))
+# colnames(df.sam)[1] <-"sample.name.match"
+# 
+# sam %>%
+#   left_join(df.sam) -> sam
+# 
+# sam %>%
+#   filter(Site %in% c("CRE-MXT-NCD","CRE-MXG-NCD",
+#                      "OTO-MXT-NCD","OTO-MON-NCD")) %>%
+#   mutate(loc = ifelse(Site %in% c("CRE-MXT-NCD","CRE-MXG-NCD"), 
+#   "CRE", "OTO")) %>%
+#   mutate(tree = ifelse(Site %in% c("CRE-MXT-NCD", "OTO-MXT-NCD"), 
+#                        TRUE, FALSE))-> tmp
+# ggplot(tmp, aes(x = DPCoA1, y = DPCoA2, color = tree)) +
+#   geom_point() +
+#   facet_grid(loc~Tissue)
+# 
+# 
+# # also look at pairwise distances
+# # CRE
+# dist.df %>%
+#   filter(grepl("CRE", Site_samp1)) %>%
+#   filter(grepl("CRE", Site_samp2)) -> dist.cre
+# colnames(dist.cre)
+# dist.cre %>%
+#   mutate(site.pair = paste0(Site_samp1, "__", Site_samp2)) %>%
+#   mutate(site.pair = ifelse(sameSite == TRUE, Site_samp1, "Between")) -> dist.cre
+# 
+# ggplot(dist.cre, aes(x = hav.dist.km, y = physor.comm.dist, 
+#                      color = site.pair)) +
+#   geom_point() +
+#   geom_smooth(method =  "lm") +
+#   facet_grid(~Tissue_samp1)
+# 
+# # OTO
+# dist.df %>%
+#   filter(grepl("OTO", Site_samp1)) %>%
+#   filter(grepl("OTO", Site_samp2)) -> dist.cre
+# dist.cre %>%
+#   mutate(site.pair = paste0(Site_samp1, "__", Site_samp2)) %>%
+#   mutate(site.pair = ifelse(sameSite == TRUE, Site_samp1, "Between")) -> dist.cre
+# ggplot(dist.cre, aes(x = hav.dist.km, y = physor.comm.dist, 
+#                      color = site.pair)) +
+#   geom_point() +
+#   geom_smooth(method =  "lm") +
+#   facet_grid(~Tissue_samp1) +
+#   xlim(0, 0.05)
+# 
+# 
+# # only within sites
+# dist.df %>%
+#   filter(sameSite == TRUE) %>%
+#   filter(Tissue_samp1 == "L") -> tmp
+# tmp$Site <- tmp$Site_samp1
+# indx <- sam[,c("Site","mono.mixed")]
+# tmp %>%
+#   left_join(indx) -> tmp
+# 
+# ggplot(tmp, aes(x = hav.dist.km, y = , color = Site)) +
+#   geom_point() +
+#   facet_wrap(~mono.mixed)
+# 
+# mod <- lm(physor.comm.dist ~ hav.dist.km*Site, data = tmp)
+# anova(mod)
+# 
+# lstends(mod,"Site")
+
+
+```
+
+
+

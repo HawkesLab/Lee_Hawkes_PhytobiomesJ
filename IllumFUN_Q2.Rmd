@@ -1,0 +1,3393 @@
+---
+title: "Illumina data, Fungi: Q2"
+author: "Marissa Lee"
+date: "12/16/2019"
+output:
+  pdf_document: default
+---
+
+Q2. How are differences in fungal composition across the landscape explained by environmental variables?
+
+*Table of contents*
+
+#### 0. Load data and pre-process ASV matrix
+See IllumFUN_Q1.Rmd
+
+#### A. Determine which environmental variables to include in path analysis
+1. Select initial continuous variables
+2. Remove variables that are highly correlated (>0.8)
+3. Transform to normal all environmental variables
+4. Again, check for correlated variables
+5. Variable selection w/ LASSO
+
+#### B. SEM using DPCoA1 score to represent community
+1. Plot tissue-specific DPCoAs
+2. Construct tissue-specific SEMs
+
+#### C. Investigate SEM results with bivariate plots
+1. Set up functions, levels, colors
+2. Make plotting dataframes -- samples
+3. Make plotting dataframes -- ASVs
+4. Plot -- direct effects
+5. Plot -- indirect effects
+
+#### D. Investigate SEM results with HMSC
+1. Set up HMSC analyses on the HPC
+2. Examine HMSC output
+3. Prune to high confidence taxa-environment relationships
+4. Make phylogenetic tree/heat map plots
+
+#### E. Follow-ups
+1. Varpart for leaf fungi
+2. Variance explained by VST PCoA1
+
+________________________________
+
+Load packages, functions, paths
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, cache = T)
+
+# paths
+merged_path <- "data_intermediates/Illum_analyses/FUN-merged"
+out_path <- "output/illumina/Q2"
+
+# custom functions
+source("code/helpers.R") # misc helpful fxns
+#sourceDir("code") # loads all the custom functions in this folder
+
+# formatting
+require("tidyverse"); packageVersion("tidyverse")
+require("readxl"); packageVersion("readxl") # to read in excel files
+#library("gridExtra"); packageVersion("gridExtra")
+library("phyloseq");  packageVersion("phyloseq")
+library("speedyseq")
+
+# stats
+#library("vegan"); packageVersion("vegan") # vif.cca() function
+#library("mvabund"); packageVersion("mvabund")
+#library("gjam"); packageVersion("gjam")
+#library("jtools"); packageVersion("jtools") # used to test environmental differences based on plot type
+#library("car"); packageVersion("car") # has vif tools
+
+```
+
+Custom functions
+```{r, include=FALSE}
+
+# calc geometric mean of each ASV
+gm_mean = function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+
+update_vst <- function(ps){
+  
+  require(DESeq2)
+  require(phyloseq)
+  
+  ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+  geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+  ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+  ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+  #plotDispEsts(ps_ds) # plot the dispersion estimates
+  vst <- getVarianceStabilizedData(ps_ds)
+  vst <- t(vst) # need to make the rows samples
+  
+  ps.new <- ps
+  otu_table(ps.new) <- otu_table(vst, taxa_are_rows = F)
+  return(ps.new)
+  
+}
+
+
+```
+
+________________________________
+# A. Determine which environmental variables to include in path analysis
+
+## 1. Select initial continuous variables
+
+Include stand.age as a continuous predictor?
+```{r, echo = F}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+ps
+sam <- data.frame(sample_data(ps))
+sam %>%
+  dplyr::select(Site, mono.mixed, stand.age.yrs.num, stand.age.yrs.cat) -> tmp
+
+# tmp %>%
+#   group_by(stand.age.yrs.num) %>%
+#   summarize(n = length(unique(Site)))
+# # one site has a category but not a number
+#
+# tmp %>%
+#   filter(is.na(stand.age.yrs.num)) %>%
+#   select(Site, stand.age.yrs.num, stand.age.yrs.cat) %>%
+#   unique()
+
+sam[sam$Site == "LWR-BHO-NCS", "stand.age.yrs.num"] <- 11
+
+```
+Yes -- just need to include a conservative estimate for LWR-BHO's stand age. It is over 10 yrs old, but unclear how old, so fill in as 11 yrs for now.
+
+Calculate max basal area. Use the max basal width and length to calculate ellipse area
+```{r}
+# # A = pi * .5(width) * .5(length)
+sam %>%
+  mutate(basal.area.m2 = pi * (0.5* max.basallength.m) * (0.5* max.basalwidth.m)) -> sam
+
+# ggplot(sam, aes(x = max.basallength.m, y = basal.area.m2)) +
+#   geom_point()
+# ggplot(sam, aes(x = max.basalwidth.m, y = basal.area.m2)) +
+#   geom_point()
+
+```
+
+Use bulk density(g/cm3) in NCDA&CS soil report to convert to element conc (mg/dm3) into (ug/g soil)
+```{r}
+#x.mg.dm3 <- sam$P
+#bulk <- sam$W.V
+
+mg.dm3_to_ug.g <- function(x.mg.dm3, bulk){
+  # convert from dm3 to cm3
+  x.mg.cm3 <- x.mg.dm3 / 1000
+  # convert from cm3 to g soil with bulk soil (g/cm3)
+  x.mg.g <- x.mg.cm3 / bulk
+  # convert from mg/g to ug/g
+  x.ug.g <- x.mg.g * 1000
+  return(x.ug.g)
+}
+
+```
+
+Select initial subset of continuous variables
+
+- *Exclude silt* since sand + clay + silt = 100
+- *Exclude nh4 and no3* since nh4 + no3 = TIN
+- *Exclude BS, Ac, and CEC* since this is represented by ph and texture
+
+```{r, echo = F}
+# Exclude silt since 100 - (sand + clay) = silt
+
+# Exclude nh4 + no3 since TIN
+
+initial.subset <- c("MAP.mm", "MAT.C",
+                    "SOM","W.V","ph",
+                    "watercontent",
+                    "P","K","Ca","Cu","Mg","Mn","S", "Zn",
+                    "TIN","p.resin","mbc","doc",
+                    "perc.C","perc.N", 
+                    "perc.sand", "perc.clay",
+                    "basal.area.m2", "max.height.m", "stand.age.yrs.num")
+initial.subset
+length(initial.subset)
+```
+
+Update phyloseq objects with stand.age and basal area decisions
+```{r}
+# modify the sample data with (1) stand age update, and (2) calc plant basal area
+mg.dm3_to_ug.g <- function(x.mg.dm3, bulk){
+  # convert from dm3 to cm3
+  x.mg.cm3 <- x.mg.dm3 / 1000
+  # convert from cm3 to g soil with bulk soil (g/cm3)
+  x.mg.g <- x.mg.cm3 / bulk
+  # convert from mg/g to ug/g
+  x.ug.g <- x.mg.g * 1000
+  return(x.ug.g)
+}
+make.sam.updates <- function(sam){
+
+  #(1) stand age
+  sam[sam$Site == "LWR-BHO-NCS", "stand.age.yrs.num"] <- 11
+  
+  #(2) basal area
+  sam %>%
+    mutate(basal.area.m2 = pi * (0.5* max.basallength.m) * (0.5* max.basalwidth.m)) -> sam
+  
+  #(3) NCAg soil units
+  cols <- c("P","K","Na","Ca","Cu","Mg","Mn","S","Zn")
+  for(i in 1:length(cols)){
+    sam[,cols[i]] <- mg.dm3_to_ug.g(x.mg.dm3 = sam[,cols[i]], bulk = sam[,"W.V"])
+  }
+  sam.updated <- sam
+  
+  return(sam.updated)
+}
+#
+# # # all
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# 
+# # leaf
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# #
+# # # root
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# #
+# # # soil
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+
+
+```
+
+Print the Site characteristics table
+```{r}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+sam %>%
+  select(Site, MAP.mm, MAT.C) -> tmp
+tmp<- unique(tmp)
+range(tmp$MAP.mm)[2] - range(tmp$MAP.mm)[1]
+range(tmp$MAT.C)[2] - range(tmp$MAT.C)[1]
+
+sam %>%
+  select(Site, max.height.m, basal.area.m2, ph, perc.C, P, K, Cu, Mn, TIN, p.resin, doc) -> df
+df <- unique(df)
+dim(df)
+
+df %>%
+  gather(key = "var", value = "value", -Site) %>%
+  group_by(Site, var) %>%
+  summarize(n = length(Site),
+            mean = mean(value),
+            se = sd(value)/sqrt(n)) %>%
+  arrange(var, Site) -> df.summ
+write.csv(df.summ, file.path(out_path, "siteSummary.csv"))
+
+```
+
+Print the correlation matrix
+```{r}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+sam %>%
+  select(Site, SiteSamp, initial.subset, samp.lat, samp.lon) -> df
+df <- unique(df)
+df %>%
+  select(max.height.m, basal.area.m2, stand.age.yrs.num,
+         ph, perc.C, watercontent, doc, p.resin, TIN,
+         SOM, W.V, mbc, 
+         Cu, K, Mg, Mn, P, Zn,
+         Ca, perc.N, S,
+         perc.clay, perc.sand, MAP.mm, MAT.C, samp.lat, samp.lon) -> df
+cor(df)
+write.csv(cor(df), file = file.path(out_path, "cor_allvars.csv"))
+
+tmp <- cor(mat)
+round(tmp[,"stand.age.yrs.num"], digits= 2)
+
+# P 0.38
+# p.resin 0.41
+# basal area 0.48
+# Zn 0.60
+
+ggplot(df, aes(x = stand.age.yrs.num, y = MAP.mm, color = Site)) +
+  geom_point() +
+  guides(color = F)
+
+tmp <- df[,c("MAT.C","MAP.mm","stand.age.yrs.num")]
+tmp <- unique(tmp)
+cor(tmp)
+
+```
+
+## 2. Remove variables that are highly correlated (>0.8)
+
+Bivariate correlations
+```{r}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps))
+sam %>%
+  dplyr::select(SiteSamp, initial.subset,"samp.lat","samp.lon") %>%
+  unique() %>%
+  dplyr::select(-SiteSamp) -> env.mat
+head(env.mat)
+
+cor.env.mat <- cor(env.mat)
+# pdf(file = file.path(out_path, "corrplot_beforeTrim.pdf"), width = 10, height = 10)
+# corrplot(cor.env.mat, method = "number", type = "lower")
+# dev.off()
+# write.csv(cor.env.mat, file = file.path(out_path, "cors.csv"))
+
+df.cor <- data.frame(var1 = row.names(cor.env.mat), cor.env.mat, row.names = NULL)
+df.cor %>%
+  gather(key = "var2", value = "cor", -var1) %>%
+  filter(var1 != var2) -> df.cor
+
+df.cor %>%
+  filter(cor > 0.8) %>%
+  arrange(-cor)
+
+df.cor %>%
+  filter(cor < -0.8) %>%
+  arrange(-cor)
+
+df.cor %>%
+  filter(var1 == "Mg") %>%
+  arrange(-cor)
+
+```
+
+Decide on which correlated variables to exclude
+```{r}
+sam %>%
+  dplyr::select(Site, SiteSamp, mono.mixed, perc.N, perc.C, 
+                ph, BS., Mg, Ca, perc.sand, W.V, watercontent,
+                CEC, SOM, mbc) %>%
+  unique() -> tmp
+
+p.c_n <- ggplot(tmp, aes(x = perc.N, y = perc.C, color = mono.mixed)) +
+  geom_point()
+p.c_n
+
+p.ph_bs<- ggplot(tmp, aes(x = ph, y = BS., color = mono.mixed)) +
+  geom_point()
+p.ph_bs
+
+p.mg_ca <- ggplot(tmp, aes(x = Mg, y = Ca, color = mono.mixed)) +
+  geom_point()
+p.mg_ca
+
+```
+
+- Soil %C and %N (r = 0.93): *Exclude perc.N* because some mixed-tree plots have distinctly greater %C, not %N
+- Soil Mg and Ca (r = 0.91): *Exclude both*. Both are mobile in the form of cations and so are they highly correlated with ph/CEC/texture. 
+
+Decide on more variables to exclude
+```{r}
+# sam %>%
+#   dplyr::select(initial.subset) %>%
+#   dplyr::select(-c(perc.N, BS., Mg, Ca)) %>%
+#   unique() -> env.mat
+# cor.env.mat <- cor(env.mat)
+# df.cor <- data.frame(var1 = row.names(cor.env.mat), cor.env.mat, row.names = NULL)
+# df.cor %>%
+#   gather(key = "var2", value = "cor", -var1) %>%
+#   filter(var1 != var2) %>%
+#   mutate(var.pair = paste0(var1,"_", var2)) -> df.cor
+# df.cor %>%
+#   filter(cor > 0.8) %>%
+#   arrange(-cor)
+
+sam %>%
+  dplyr::select(Site, mono.mixed, perc.N, perc.C, 
+                ph, Mg, Ca, perc.sand, W.V, watercontent,
+                CEC, SOM, mbc) %>%
+  unique() -> tmp
+
+p.sand_wv<- ggplot(tmp, aes(x = perc.sand, y = W.V, color = mono.mixed)) +
+  geom_point()
+p.sand_wv
+
+p.c_som<- ggplot(tmp, aes(x = perc.C, y = SOM, color = mono.mixed)) +
+  geom_point()
+
+p.c_mbc<- ggplot(tmp, aes(x = perc.C, y = mbc, color = mono.mixed)) +
+  geom_point()
+
+p.som_mbc<- ggplot(tmp, aes(x = SOM, y = mbc, color = mono.mixed)) +
+  geom_point()
+
+require(gridExtra)
+grid.arrange(p.c_mbc + guides(color = F), 
+             p.som_mbc + guides(color = F), 
+             p.c_som + guides(color = F), 
+             ncol = 2)
+
+```
+
+- Soil perc.sand and bulk density (W.V) (r = 0.87): *Exclude bulk density*
+- Soil perc.C and SOM (r = 0.83), soil perc.C and mbc (r = 0.82): *Exclude SOM and mbc*
+
+Examine more variables...
+```{r}
+sam %>%
+  dplyr::select(Site, mono.mixed, samp.lon, MAT.C) %>%
+  unique() -> tmp
+
+p.lon_C<- ggplot(tmp, aes(x = samp.lon, y = MAT.C, color = mono.mixed)) +
+  geom_point()
+p.lon_C
+
+```
+
+Remove: perc.N, Ca, W.V, SOM, mbc
+```{r, echo = F}
+sam %>%
+  dplyr::select(initial.subset) %>%
+  dplyr::select(-c(perc.N, Ca, W.V, SOM, mbc)) %>%
+  unique()-> env.mat
+
+cont.vars <- colnames(env.mat)
+length(cont.vars)
+saveRDS(cont.vars, file = file.path(out_path, "contvars.RData"))
+
+# put variables into a category: climate, soil properties, plant stand attributes
+cont.vars
+cont.vars.df <- data.frame(var = cont.vars,
+           var.type1 = c(rep("climate", 2), 
+                         rep("soil", 15), 
+                         rep("plant", 3)), 
+           row.names = NULL, stringsAsFactors = F)
+cont.vars.df %>%
+  mutate(var.type2 = ifelse(var %in% c("perc.sand","perc.clay"), "texture", var.type1)) %>%
+  mutate(var.type2 = ifelse(var.type1 == "soil" & var.type2 == "soil", "soil.resources", var.type2)) -> cont.vars.df
+
+write.csv(cont.vars.df, file = file.path(out_path, "contvars_df.csv"))
+dim(cont.vars.df)
+```
+Now there are *20* continuous environmental variables
+
+## 3. Transform to normal all environmental variables
+
+Transform all predictor variables to normally-distributed since this is required for SEM
+```{r}
+library(MVN)
+cont.vars <- readRDS(file = file.path(out_path, "contvars.RData"))
+# 
+# # load phylo obj w/ complete samples (112)
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+ps
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(cont.vars) -> X
+
+# transform all variables to normal
+mvn(X)
+X.t <- X
+```
+
+*Climate*
+```{r}
+# MAP.mm
+hist(X[,"MAP.mm"]/1000)
+range(X$MAP.mm/1000)
+shapiro.test(X[,"MAP.mm"]) # just go with non-transform because 1/is confusing
+#shapiro.test(1/log(X[,"MAP.mm"], base = 10)) # very slightly better
+X.t$MAP.mm <- X[,"MAP.mm"]/1000
+
+# MAT.C
+hist(log(X[,"MAT.C"], base = 10))
+shapiro.test(X[,"MAT.C"])
+shapiro.test(log(X[,"MAT.C"]+1, base = 10)) # very slightly better
+range(log(X$MAT.C+1, base= 10))
+X.t$MAT.C <- log(X[,"MAT.C"]+1, base = 10)
+```
+
+*Soil resources*
+```{r}
+logitTransform <- function(p) { log(p/(1-p), base = 10) }
+
+# ph - already normal
+hist(X$ph)
+
+#watercontent
+hist(X[,"watercontent"])
+shapiro.test(X[,"watercontent"])
+shapiro.test(log(X[,"watercontent"], base= 10)+10) # normal
+range(log(X[,"watercontent"], base= 10)+10)
+X.t$watercontent <- log(X[,"watercontent"], base = 10) + 10
+
+# P
+hist(X$P)
+shapiro.test(X$P)
+shapiro.test(log(X$P+1, base = 10)) # not normal but better
+range(log(X$P+1, base = 10))
+X.t$P <- log(X$P+1, base = 10)
+
+# K
+hist(X$K)
+shapiro.test(X$K)
+shapiro.test(log(X$K+1, base = 10)) # not normal but much better
+range(log(X$K+1, base = 10))
+X.t$K <- log(X$K+1, base = 10)
+
+# Cu
+hist(X$Cu)
+shapiro.test(X$Cu)
+shapiro.test(log(X$Cu+1, base = 10)) # not normal but much better
+range(log(X$Cu+1, base = 10))
+X.t$Cu <- log(X$Cu+1, base = 10)
+
+# Mn
+hist(X$Mn)
+shapiro.test(X$Mn)
+shapiro.test(log(X$Mn+1, base = 10)) # not normal but better
+range(log(X$Mn+1, base = 10))
+X.t$Mn <- log(X$Mn+1, base = 10)
+
+# S
+hist(X$S)
+shapiro.test(X$S)
+shapiro.test(log(X$S+1, base = 10)) # not normal but better
+range(log(X$S+1, base = 10))
+X.t$S <- log(X$S+1, base = 10)
+
+# Zn
+hist(X$Zn)
+hist(log(X$Zn))
+shapiro.test(X$Zn)
+shapiro.test(log(X$Zn, base = 10)+1) # not normal but better
+range(log(X$Zn, base = 10)+1)
+X.t$Zn <- log(X$Zn, base = 10)+1
+
+# Mg
+hist(X$Mg)
+hist(log(X$Mg))
+shapiro.test(X$Mg)
+shapiro.test(log(X$Mg+1, base = 10)) # not normal but better
+range(log(X$Mg, base = 10))
+X.t$Mg <- log(X$Mg+1, base = 10)
+
+# TIN
+hist(X$TIN)
+shapiro.test(log(X$TIN, base = 10)) # normal
+shapiro.test(log(X$TIN+1, base = 10)) # close to normal
+range(log(X$TIN+1, base = 10))
+X.t$TIN <- log(X$TIN+1, base = 10)
+
+# p.resin
+hist(X$p.resin)
+shapiro.test(log(X$p.resin+1, base = 10)) # not normal but better
+range(log(X$p.resin+1, base = 10))
+X.t$p.resin <- log(X$p.resin+1, base = 10)
+
+# doc
+hist(X$doc)
+shapiro.test(X$doc)
+shapiro.test(log(X$doc+1, base = 10)) # not normal but better
+range(log(X$doc+1, base = 10))
+X.t$doc <- log(X$doc+1, base = 10)
+
+# perc.C
+hist(X[,"perc.C"])
+logit <- logitTransform(p = (X[,"perc.C"])/100)
+hist(logit)
+range(logit)
+shapiro.test(X$perc.C)
+shapiro.test(logit) # not normal but better
+X.t$perc.C <- logit
+
+```
+
+*Texture*
+```{r}
+logitTransform <- function(p) { log(p/(1-p), base = 10) }
+
+#perc.sand
+hist(X[,"perc.sand"])
+logit <- logitTransform(p = (X[,"perc.sand"])/100)
+hist(logit)
+range(logit)
+shapiro.test(X[,"perc.sand"])
+shapiro.test(logit) # better
+X.t$perc.sand <- logit
+
+#perc.clay
+hist(X[,"perc.clay"])
+logit <- logitTransform(p = (X[,"perc.clay"])/100)
+range(logit)
+shapiro.test(X[,"perc.clay"])
+shapiro.test(logit) # better
+X.t$perc.clay <- logit
+
+```
+
+*Plant size and stand age*
+```{r}
+
+# max.height.m
+hist(X$max.height.m)
+shapiro.test(X$max.height.m) # not normal, but relatively close
+
+# basal.area.m2
+hist(X$basal.area.m2)
+shapiro.test(log(X$basal.area.m2, base = 10)) # normal
+X.t$basal.area.m2 <- log(X$basal.area.m2, base = 10)
+range(log(X$basal.area.m2, base = 10))
+
+# stand.age.yrs.num
+hist(log(X[,"stand.age.yrs.num"]+1, base = 10))
+shapiro.test(X[,"stand.age.yrs.num"])
+shapiro.test(log(X[,"stand.age.yrs.num"]+1, base = 10)) # better
+X.t$stand.age.yrs.num <- log(X[,"stand.age.yrs.num"]+1, base = 10)
+range(log(X[,"stand.age.yrs.num"]+1, base = 10))
+
+```
+
+*Lat and lon*
+```{r}
+sam %>%
+  dplyr::select(samp.lon, samp.lat) %>%
+  unique() -> tmp
+cor(tmp)
+
+hist(tmp$samp.lon)
+hist(tmp$samp.lat)
+
+shapiro.test(tmp$samp.lon)
+shapiro.test(tmp$samp.lat)
+
+```
+
+Save transformed environmental variables
+```{r}
+# # # add the site and sample ids
+mat.t <- data.frame(sam[,c("Site","SiteSamp")], X.t, row.names = NULL)
+# # # 
+# # # # save
+write.csv(mat.t, file = file.path(out_path, "normTransformed_contvars.csv"))
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars.csv"), row.names = 1)
+
+```
+
+Examine the correlation of the transformed variables
+```{r}
+#add samp.lat and lon
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps))
+sam %>%
+  dplyr::select(SiteSamp, samp.lon, samp.lat) %>%
+  unique() -> tmp
+colnames(mat.t)
+mat.t %>%
+  left_join(tmp) -> mat.t
+
+head(mat.t)
+cor.mat <- cor(mat.t[,-c(1:2)])
+cor.mat[,"watercontent"]
+cor.mat[,"Mg"]
+# library(corrplot)
+# pdf(file = file.path(out_path, "corrplot_normTransformed.pdf"), width = 8, height = 8)
+corrplot(cor.mat, method = "number", type = "lower")
+# dev.off()
+# # 
+# Zn and Cu are highly correlated (0.79)
+# perc.sand and watercontent are highly correlated (-.79)
+# S and perc.C are highly correlated (0.79)
+# lon and MAT are highly correlated (r = 0.82)
+# lat and MAP are highly correlated (r = -0.78)
+
+# remove Zn
+# remove watercontent
+# remove S
+# don't remove lat/lon
+
+#sel <- !colnames(mat.t) %in% c("watercontent")
+#mat.t.trim <- mat.t[,sel]
+#cor.mat <- cor(mat.t.trim[,-c(1:3)])
+#corrplot(cor.mat, method = "number", type = "lower")
+
+#write.csv(mat.t.trim, file = file.path(out_path, "normTransformed_contvars_trim.csv"))
+#mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim.csv"), row.names = 1)
+#dim(mat.t)
+# colnames(mat.t)
+# 
+# # NEED to equalize variances otherwise get this message from lavaan
+# # Warning message:
+# # In lav_data_full(data = data, group = group, cluster = cluster,  :
+# #   lavaan WARNING: some observed variances are (at least) a factor 1000 times larger than others; use varTable(fit) to investigate
+# 
+apply(mat.t[-c(1:2)], 2, var)
+# really low var in MAP and MAT
+range(mat.t$MAP.mm)
+range(mat.t$MAT.C)
+# really high var in samp.lon
+range(mat.t$samp.lon)
+# 
+# # #Mamet 2017: To equalize variances we standardized variables by dividing raw values by their group maximum... we can't do that for all vars because there are negative values
+# # divide by the range instead
+abs.range <- function(x){
+  abs(range(x)[2]- range(x)[1])
+}
+data <- mat.t[,-c(1:2)]
+ranges.vec <- apply(data, 2, abs.range)
+ranges.vec
+data.s <- scale(data, center = FALSE, scale = ranges.vec)
+saveRDS(data.s, file = file.path(out_path, "scaledmat.RData"))
+
+# require(corrplot)
+# pdf(file = file.path(out_path, "corrplot_normTransformed_postTrim.pdf"), width = 8, height = 8)
+cor(data.s)
+corrplot(cor(data.s), method = "number", type = "lower")
+# dev.off()
+# after equalizing vars... 
+# lon and MAT (r = 0.82) 
+# lat and MAP (r = -0.78)
+
+# # add back the site and sample IDs
+mat.ts <- data.frame(mat.t[,c(1:2)], data.s)
+write.csv(mat.ts, file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"))
+
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+```
+
+
+## 4. Variable selection with LASSO
+
+Notes on LASSO with glmnet
+```{r}
+library(glmnet)
+#package.version('glmnet')
+
+extract.lambda_uni <- function(x, s){
+  tab <- coef(x, s = s)
+  notempty <- tab[tab[,1] != 0,]
+  names(notempty)[-1]
+}
+
+# notes on DPCoA
+#ps.l <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimAssignASVs_leaf.RData"))
+#dpcoa.l <- DPCoA(ps.l, correction = cailliez, scannf = FALSE)
+# distance object ultimately provided is the square root of the cophenetic/patristic (cophenetic.phylo) distance between the species, which is always Euclidean. 
+# correction = Although this distance is Euclidean, for numerical reasons it will sometimes look non-Euclidean, and a correction will be performed (e.g. cailliez). If the distance matrix is Euclidian, no correction will be performed, regardless of the value of the correction argument.
+# scannf = barplot of eigenvalues to be created if TRUE
+#plot_ordination(ps.l, dpcoa.l, "biplot")
+#summary(dpcoa.l)
+# nf = number of axes kept
+# dw = weights of the ASVs
+# lw = weights of all the samples
+# RaoDiv = diversities within samples
+# RaoDis = an object of class dist containing the dissimilarities between samples
+# RaoDecodiv # decomposition of diversity within and between samples
+# dls = coordinates of the ASVs
+# li = coordinates of the samples
+# c1 = scores of the principal axes of the ASVs
+```
+
+*Leaf*
+```{r}
+# load phylo obj
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+
+# calc dpcoa
+#dpcoa <- DPCoA(ps, correction = cailliez, scannf = FALSE)
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_leaf.RData")
+df.dpcoa <- data.frame(sample.name.match = row.names(dpcoa$li), dpcoa$li, row.names = NULL)
+# # load normalized environmental variables
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+# make dataframe
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(sample.name.match, Site, SiteSamp) -> sam
+sam %>%
+  left_join(df.dpcoa) %>%
+  left_join(mat.t) %>%
+  select(-c(sample.name.match, Site, SiteSamp, Axis2)) -> data
+data1 <-as.matrix(data)
+#data1<- data1[,!colnames(data1) %in% c("samp.lon","samp.lat")]
+
+# fit LASSO model with range of lambda
+require(glmnet)
+fit <- glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(fit, xvar = "lambda", label = T)
+# do cv to find appropriate lambda
+cvfit = cv.glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(cvfit)
+# # extract suggested variables
+extract.lambda_uni(cvfit, s = "lambda.1se")
+extract.lambda_uni(cvfit, s = "lambda.min")
+#
+# # save plots
+pdf(file = file.path(out_path, "leaf_dpcoa_glmnet.pdf"), width = 4, height = 6)
+par(mfrow = c(2,1))
+plot(cvfit)
+plot(fit, xvar = "lambda", label = T)
+dev.off()
+
+# save data
+mat <- data.frame(sam[,c("sample.name.match","Site","SiteSamp")], data1)
+vars <- extract.lambda_uni(cvfit, s = "lambda.min")
+vars
+mat %>%
+  select(sample.name.match, Site, SiteSamp, Axis1, vars) -> mat.vars
+mat.vars
+write.csv(mat.vars, file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"))
+
+```
+
+*Root*
+```{r}
+# load phylo obj
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# # calc dpcoa
+#dpcoa <- DPCoA(ps, correction = cailliez, scannf = FALSE)
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_root.RData")
+df.dpcoa <- data.frame(sample.name.match = row.names(dpcoa$li), dpcoa$li, row.names = NULL)
+# # load normalized environmental variables
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+# # make dataframe
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(sample.name.match, Site, SiteSamp) -> sam
+sam %>%
+  left_join(df.dpcoa) %>%
+  left_join(mat.t) %>%
+  select(-c(sample.name.match, Site, SiteSamp, Axis2)) -> data
+data1 <-as.matrix(data)
+data1<- data1[,!colnames(data1) %in% c("samp.lon","samp.lat")]
+
+# fit LASSO model with range of lambda
+fit <- glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(fit, xvar = "lambda", label = T)
+# do cv to find appropriate lambda
+cvfit = cv.glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(cvfit)
+# extract suggested variables
+extract.lambda_uni(cvfit, s = "lambda.1se")
+extract.lambda_uni(cvfit, s = "lambda.min")
+
+# save plots
+pdf(file = file.path(out_path, "root_dpcoa_glmnet.pdf"), width = 4, height = 6)
+par(mfrow = c(2,1))
+plot(cvfit)
+plot(fit, xvar = "lambda", label = T)
+dev.off()
+
+# save data
+mat <- data.frame(sam[,c("sample.name.match","Site","SiteSamp")], data1)
+vars <- extract.lambda_uni(cvfit, s = "lambda.min")
+vars
+mat %>%
+  select(sample.name.match, Site, SiteSamp, Axis1, vars) -> mat.vars
+write.csv(mat.vars, file = file.path(out_path, "root_dpcoa_SEMdata.csv"))
+
+```
+
+*Soil* -- Flip the DPCoA axis to help with interpretation
+```{r}
+# load phylo obj
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+# calc dpcoa
+#dpcoa <- DPCoA(ps, correction = cailliez, scannf = FALSE)
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_soil.RData")
+df.dpcoa <- data.frame(sample.name.match = row.names(dpcoa$li), dpcoa$li, row.names = NULL)
+df.dpcoa %>%
+  dplyr::rename('Axis1_orig'='Axis1') %>%
+  mutate(Axis1 = Axis1_orig * -1) -> df.dpcoa
+
+# load normalized environmental variables
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+# make dataframe
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(sample.name.match, Site, SiteSamp) -> sam
+sam %>%
+  left_join(df.dpcoa) %>%
+  left_join(mat.t) %>%
+  select(-c(sample.name.match, Site, SiteSamp, Axis2, Axis1_orig)) -> data
+data1 <-as.matrix(data)
+data<- data1[,!colnames(data1) %in% c("samp.lon","samp.lat")]
+
+# fit LASSO model with range of lambda
+require(glmnet)
+fit <- glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(fit, xvar = "lambda", label = T)
+# do cv to find appropriate lambda
+cvfit = cv.glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(cvfit)
+# extract suggested variables
+extract.lambda_uni(cvfit, s = "lambda.1se")
+extract.lambda_uni(cvfit, s = "lambda.min")
+
+# save plots
+pdf(file = file.path(out_path, "soil_dpcoa_glmnet.pdf"), width = 4, height = 6)
+par(mfrow = c(2,1))
+plot(cvfit)
+plot(fit, xvar = "lambda", label = T)
+dev.off()
+
+# save data
+mat <- data.frame(sam[,c("sample.name.match","Site","SiteSamp")], data1)
+vars <- extract.lambda_uni(cvfit, s = "lambda.min")
+vars
+mat %>%
+  select(sample.name.match, Site, SiteSamp, Axis1, vars) -> mat.vars
+write.csv(mat.vars, file = file.path(out_path, "soil_dpcoa_SEMdata.csv"))
+
+```
+
+
+________________________________
+# B. SEM using DPCoA1 score to represent fungal communities
+
+## 1. Plot Tissue-specific DPCoAs
+```{r}
+# leaf
+ps.l <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+dpcoa.l <- readRDS("output/illumina/Q0/dpcoa_leaf.RData")
+plot_ordination(ps.l, dpcoa.l, type="split",
+                color = "phylum", shape = "Tissue") +
+  ggplot2::scale_colour_discrete() +
+  ggplot2::theme_bw() +
+  ggtitle("Leaf")
+ggsave(filename = file.path(out_path, "dpcoa_l.pdf"),
+       width = 6, height = 4)
+
+# root
+ps.r <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+dpcoa.r <- readRDS("output/illumina/Q0/dpcoa_root.RData")
+plot_ordination(ps.r, dpcoa.r, type="split",
+                color = "phylum", shape = "Tissue") +
+  ggplot2::scale_colour_discrete() +
+  ggplot2::theme_bw() +
+  ggtitle("Root")
+ggsave(filename = file.path(out_path, "dpcoa_r.pdf"),
+       width = 6, height = 4)
+
+# soil
+ps.s <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+dpcoa.s <- readRDS("output/illumina/Q0/dpcoa_soil.RData")
+plot_ordination(ps.s, dpcoa.s, type="split",
+                color = "phylum", shape = "Tissue") +
+  ggplot2::scale_colour_discrete() +
+  ggplot2::theme_bw() +
+  ggtitle("Soil") +
+  scale_x_reverse()
+ggsave(filename = file.path(out_path, "dpcoa_s_reverseX.pdf"),
+       width = 6, height = 4)
+
+
+```
+
+## 2. Construct Tissue-specific SEMs
+
+*Leaf* - divide by range
+```{r}
+# set up sem
+library(lavaan)
+library(semPlot)
+library(corrplot)
+
+mat.vars <- read.csv(file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+pdf(file = file.path(out_path, "corrplot_sem_leaf.pdf"), width = 8, height = 8)
+corrplot(cor.mat, method = "number", type = "lower")
+dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + ph + P + K + Mn + TIN + perc.sand + max.height.m
+               
+             # effect of texture on resources
+                ph + P + K + Mn + TIN ~ perc.sand
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ MAP.mm + ph + P + K + Mn + TIN + perc.sand
+                
+             # covariances
+               '
+#
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq =124, p < 0.001)
+# 1. add covariances with mi > 10 (42)
+# 2. examine residuals
+# P and Mn (0.258)
+# Mn and TIN (-0.21)
+# remove TIN (31)
+# 3. examine residuals
+# P and Mn
+# K and MAP
+# remove Mn (15, df = 4, p = 0.004)
+# 4. examine residuals
+# K and MAP
+# remove MAP from predicting height (15, df = 5, p = 0.008)
+# 5. remove K from predicting height (16, df = 6, p = 0.013)
+# 6. remove sand from predicting Ax1 (16, df = 7, p = 0.023)
+# 7. examine residuals
+# K and MAP
+# option1: remove MAP (2.4, df = 3, p = 0.484, CFI = 1, RMSEA = 0, AIC = 461)
+# option2: remove K (8.9, df = 5, p = 0.113, CFI = 0.94, RMSEA = 0.08, AIC = 547)
+
+
+# myModel.trimmed <- '# direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + ph + P + max.height.m
+#                
+#              # effect of texture on resources
+#                 ph + P ~ perc.sand
+#               
+#              # effect of stand age on resources
+#                   
+#              # effect of climate, resources, texture and stand age on plant size
+#                 max.height.m ~ ph + P + perc.sand
+#                 
+#              # covariances
+#              #ph ~~ K
+#              #P ~~ K
+#               '
+
+
+myModel.trimmed <- '# direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ ph + P + K + max.height.m
+               
+             # effect of texture on resources
+                ph + P + K ~ perc.sand
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ ph + P + perc.sand
+                
+             # covariances
+             ph ~~ K
+             P ~~ K
+              '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE)
+capture.output(summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE), 
+               file = file.path(out_path,"sem_l_std.txt"))
+
+summary(fit, rsquare = TRUE)
+capture.output(summary(fit, rsquare = TRUE), 
+               file = file.path(out_path,"sem_l_unstd.txt"))
+
+fitm <- fitMeasures(fit)
+fitm
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+fitm['aic']
+
+# modindices(fit) %>%
+#   filter(mi > 1) %>%
+#   arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+```
+
+Multiple regression
+```{r}
+modl <- lm(Axis1 ~ max.height.m + ph + K + P + perc.sand, data = mat.vars)
+an <- anova(modl)
+afss <- an$"Sum Sq"
+capture.output(print(cbind(an,PctExp=afss/sum(afss)*100)), file = "leaf_mr.txt")
+
+```
+
+*Leaf* - divide by range, lat and lon
+```{r}
+# set up sem
+library(lavaan)
+library(semPlot)
+library(corrplot)
+
+mat.vars <- read.csv(file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+pdf(file = file.path(out_path, "corrplot_sem_leaf.pdf"), width = 8, height = 8)
+corrplot(cor.mat, method = "number", type = "lower")
+dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + ph + P + K + Mn + TIN + perc.C + max.height.m + stand.age.yrs.num + samp.lon + samp.lat
+               
+             # effect of texture on resources
+              
+             # effect of stand age on resources
+                ph + P + K + Mn + TIN + perc.C ~ stand.age.yrs.num
+                
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ MAP.mm + ph + P + K + Mn + TIN + perc.C + stand.age.yrs.num
+                
+             # covariances
+               '
+#
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq =493, p < 0.001)
+# 1. add covariances with mi > 10 (345)
+# 2. remove vars not predicted by stand age: ph, K (312)
+# 3. remove vars that do not predict height: TIN (312)
+# 4. remove vars that do not predict Ax1: samp.lon (261)
+# 5. examine residuals
+# Mn and Ax1 (0.48)
+# height and Ax1 (-0.309)
+# Mn and ph (0.424)
+# Mn and K (0.442)
+# TIN and MAP (0.321)
+# TIN and samp.lat (-0.303)
+# height and samp.lat (0.301)
+# remove Mn (103)
+# 6. examine residuals
+# remove TIN (80)
+# 7. remove K from predicting height (81)
+# 8. examine residuals
+# perc.C and K (0.314)
+# perc.C and samp.lat (-0.343)
+# height and lat (0.310)
+# remove perc.C (27)
+# 9. examine residuals
+# height and samp.lat (0.251)
+# MAP and P (0.200)
+# remove samp.lat (8.7, df = 4, p=0.068, AIC = 549)
+
+# can I remove more ns paths?
+# 10. remove standage from predicting Ax1
+# 11. remove standage from predicting P (1.1, df = 2, p = 0.568, AIC = 543)
+
+# alternatively... remove height (7.6, df = 4, p = 0.106)
+# can I remove more ns paths?
+# 10. remove stand.age.yrs from predicting Ax1
+# 11. remove ph from predicting Ax1 (6.9, df = 4, p=0.137, AIC = 613)
+
+# myModel.trimmed <-  '# direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + P + K + samp.lat
+#                
+#              # effect of texture on resources
+#               
+#              # effect of stand age on resources
+#                 P ~ stand.age.yrs.num
+#                 
+#              # effect of climate, resources, texture and stand age on plant size
+#                 #max.height.m ~ MAP.mm + ph + P + stand.age.yrs.num
+#                 
+#              # covariances
+#                '
+
+myModel.trimmed <-  '# direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ ph + MAP.mm + P + K + max.height.m
+
+             # effect of texture on resources
+
+             # effect of stand age on resources
+
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ MAP.mm + ph + P + stand.age.yrs.num
+
+             # covariances
+               '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+fitm['aic']
+
+# modindices(fit) %>%
+#   filter(mi > 1) %>%
+#   arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+```
+
+*Root* - divide by range
+```{r}
+mat.vars <- read.csv(file = file.path(out_path, "root_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+pdf(file = file.path(out_path, "corrplot_sem_root.pdf"), width = 8, height = 8)
+corrplot(cor.mat, method = "number", type = "lower")
+dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + MAT.C + ph + Cu + Mn + TIN + doc + perc.C + perc.sand + perc.clay + max.height.m
+               
+             # effect of texture on resources
+                ph + Cu + Mn + TIN + doc + perc.C  ~ perc.clay + perc.sand
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ MAP.mm + MAT.C + ph + Cu + Mn + TIN + doc + perc.C + perc.clay + perc.sand
+                
+             # covariances
+               '
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq = 281, p < 0.001)
+# 1. add covariates with mi > 10 (119)
+# 2. remvoe Cu from model (80)
+# 3. remove perc.clay from predicting height (80)
+# 4. remove perc.sand from predicting height (80)
+# 5. remove doc from predicting height (81)
+# 6. examine residuals
+# TIN and MATC
+# MATC and doc
+# MATC and perc.C
+# MAP and perc.C
+# Ax1 and TIN
+# remove TIN (56)
+# 7. examine residuals
+# ph and MATC
+# percC and MAP
+# remove MATC (34)
+# 8. remove clay from predicting everything except ph (35, df = 13, p = 0.001)
+# 9. examine residuals
+# percC and MAP!
+# remove MAP from predicting height (36, df = 14, p = 0.001)
+# 10. remove sand from predicting Ax1 (36, df = 15, p = 0.001)
+# 11. remove doc (33)
+# 12. remove percC from model (14, df = 7, p = 0.037)
+# 13. examine residuals
+# height and MAP
+# Mn and MAP
+# option1 -- remove MAP (3.3, df = 4, p = 0.49, CFI = 1, RMSEA = 0, AIC = 558) BETTER MODEL
+# option2 -- remove Mn (7.4, df = 5, p = 0.192, CFI = .94, RMSEA = 0.06, AIC = 579) 
+
+
+myModel.trimmed <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ ph + Mn + perc.clay + max.height.m
+               
+             # effect of texture on resources
+                ph + Mn ~ perc.sand
+                ph  ~ perc.clay
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ ph + Mn
+                
+             # covariances
+             ph ~~ Mn
+               '
+
+# myModel.trimmed <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + ph + perc.clay + max.height.m
+#                
+#              # effect of texture on resources
+#                 ph ~ perc.sand
+#                 ph  ~ perc.clay
+#               
+#              # effect of stand age on resources
+#                   
+#              # effect of climate, resources, texture and stand age on plant size
+#                 max.height.m ~ ph
+#                 
+#              # covariances
+#                '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE)
+capture.output(summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE), 
+               file = file.path(out_path,"sem_r_std.txt"))
+
+summary(fit, rsquare = TRUE)
+capture.output(summary(fit, rsquare = TRUE), 
+               file = file.path(out_path,"sem_r_unstd.txt"))
+
+
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+fitm['aic']
+
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+```
+
+Multiple regression
+```{r}
+modr <- lm(Axis1 ~ max.height.m + ph + Mn + perc.clay, data = mat.vars)
+an <- anova(modr)
+an
+afss <- an$"Sum Sq"
+capture.output(print(cbind(an,PctExp=afss/sum(afss)*100)), file = "root_mr.txt")
+
+```
+
+*Soil* - divide by range
+```{r}
+# set up sem
+library(lavaan)
+library(semPlot)
+library(corrplot)
+
+mat.vars <- read.csv(file = file.path(out_path, "soil_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+pdf(file = file.path(out_path, "corrplot_sem_soil.pdf"), width = 8, height = 8)
+corrplot(cor.mat, method = "number", type = "lower")
+dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + Cu + TIN + p.resin + doc + perc.clay + max.height.m + stand.age.yrs.num
+               
+             # effect of texture on resources
+                Cu + TIN + p.resin + doc  ~ perc.clay
+              
+             # effect of stand age on resources
+               Cu + TIN + p.resin + doc ~ stand.age.yrs.num
+                  
+             # effect of climate, resources, texture and stand age on plant size
+               max.height.m ~ MAP.mm + Cu + TIN + p.resin + doc + perc.clay + stand.age.yrs.num
+                
+             # covariances
+               '
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq = 87, p < 0.001)
+# 1. add covariates with mi > 10 (32)
+# 2. remove vars that do not predict height: Cu, TIN, p.resin (32, df = 12, p = 0.001)
+# 3. remove p.resin (27)
+# 4. remove stand age predicting doc (28)
+# 5. remove height predicting Ax1 (27)
+# 6. examine residuals
+# TIN and MAP
+# option 1: remove TIN (7.6, df =4, p = 0.106, CFI = 0.94,RMSEA = 0.9,AIC = 578)
+# option 2: remove MAP (6.7, df = 4, p = 0.152, CFI = 0.97, RMSEA = 0.08, AIC = 518) BETTER MODEL
+
+# myModel.trimmed <-  ' # direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + Cu + doc + perc.clay + stand.age.yrs.num
+#                
+#              # effect of texture on resources
+#                 Cu + doc ~ perc.clay
+#               
+#              # effect of stand age on resources
+#                 Cu ~ stand.age.yrs.num
+#                '
+
+myModel.trimmed <-  ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ Cu + TIN + doc + perc.clay + stand.age.yrs.num
+               
+             # effect of texture on resources
+                Cu + TIN + doc  ~ perc.clay
+              
+             # effect of stand age on resources
+               Cu + TIN ~ stand.age.yrs.num
+                  
+             # effect of climate, resources, texture and stand age on plant size
+
+             # covariances
+               '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE)
+capture.output(summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE), 
+               file = file.path(out_path,"sem_s_std.txt"))
+
+summary(fit, rsquare = TRUE)
+capture.output(summary(fit, rsquare = TRUE), 
+               file = file.path(out_path,"sem_s_unstd.txt"))
+
+
+fitm <- fitMeasures(fit)
+fitm['aic']
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+
+modindices(fit) %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+
+
+
+```
+
+Multiple regression
+```{r}
+mods <- lm(Axis1 ~ stand.age.yrs.num + Cu + TIN + doc, data = mat.vars)
+an <- anova(mods)
+an
+afss <- an$"Sum Sq"
+capture.output(print(cbind(an,PctExp=afss/sum(afss)*100)), file = "soil_mr.txt")
+
+```
+_______________________________
+# C. Investigate SEM results with bivariate plots
+
+## 1. Set up functions, levels, colors
+
+Format dataframe functions
+```{r}
+# mat.path = "leaf_dpcoa_SEMdata.csv"
+# ps.path = "phyloseq_samps_env_trimTreeASVs_leaf.RData"
+# dpcoa.path = "output/illumina/Q0/dpcoa_leaf.RData"
+# attr.path = "scaledmat.RData"
+
+
+format_postsem_dfs <- function(mat.path, ps.path, dpcoa.path, attr.path){
+  
+  transNotscaled_path <- "normTransformed_contvars_trim.csv"
+  
+  # load the data used for the sem, update the column names so they differ from the original sample matrix
+  mat.vars <- read.csv(file = file.path(out_path, mat.path), row.names = 1)
+  key.envvars <- colnames(mat.vars)[-c(1:4)]
+  key.envvars
+  colnames(mat.vars)[-c(1:3)] <- paste0(colnames(mat.vars)[-c(1:3)],"_sem")
+  
+  # add data from original sample matrix, updated column names
+  ps <- readRDS(file = file.path(merged_path, ps.path))
+  sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+  sam %>%
+    dplyr::select(sample.name.match, Site, SiteSamp, mono.mixed, key.envvars) -> sam.tmp
+  colnames(sam.tmp)[colnames(sam.tmp) %in% key.envvars] <- paste0(colnames(sam.tmp)[colnames(sam.tmp) %in% key.envvars], "_orig")
+  mat.vars %>%
+    left_join(sam.tmp) -> mat.df
+  
+  # add transformed but not scaled data
+  mat.trans <- read.csv(file = file.path(out_path, transNotscaled_path), row.names = 1)
+  new.names <- paste0(colnames(mat.trans)[-c(1:2)], "_trans")
+  colnames(mat.trans)[-c(1:2)] <- new.names
+  mat.df %>%
+    left_join(mat.trans) -> mat.df
+  
+  # load dpcoa1 ASV scores
+  dpcoa <- readRDS(dpcoa.path)
+  ax1 <- data.frame(sample.name.match = row.names(dpcoa$li), Axis1 = dpcoa$li$Axis1)
+  mat.df %>%
+    left_join(ax1) -> mat.df
+  asv.df <- data.frame(ASV = row.names(dpcoa$dls), CS1 = dpcoa$dls[,'CS1'], row.names = NULL)
+  
+  
+  # don't need to do this because Ax1 has not been scaled
+  # # load dpcoa1 scaling attributes for sem
+  # d <- readRDS(file = file.path(out_path, attr.path))
+  # asv.df$CS1_sem <- (asv.df$CS1 / attr(d, 'scaled:scale')['Axis1']) + attr(d, 'scaled:center')['Axis1']
+  
+  # add ASV taxonomic info
+  tax.df <- data.frame(tax_table(ps), stringsAsFactors = F)
+  asv.df %>%
+    left_join(tax.df) -> asv.df
+  
+  out.list <- list(mat.df = mat.df, asv.df = asv.df)
+  return(out.list)
+  
+}
+
+format_phySumms <- function(asv.df, rescale){
+  # summarize the dpcoa axis space by each taxonomic level on the SEM scale
+  if(rescale == TRUE){
+    asv.df %>%
+    group_by(phylum) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> phy.df
+  asv.df %>%
+    group_by(class) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> class.df
+  asv.df %>%
+    group_by(order) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> order.df
+  
+  asv.df %>%
+    group_by(family) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> family.df
+  
+  asv.df %>%
+    group_by(genus) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> genus.df
+  }else{
+    
+    asv.df %>%
+    group_by(phylum) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> phy.df
+  asv.df %>%
+    group_by(class) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> class.df
+  asv.df %>%
+    group_by(order) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> order.df
+  
+  asv.df %>%
+    group_by(family) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> family.df
+  
+  asv.df %>%
+    group_by(genus) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> genus.df
+    
+  }
+  
+  summ.list <- list(phylum = phy.df, class = class.df, order = order.df, family = family.df, genus = genus.df)
+  return(summ.list)
+  
+}
+
+make_ribbon_df <- function(n.out, x.min, x.max, subtax.df){
+  x <- seq(from = x.min, to = x.max, length.out = n.out)
+  x.df <- data.frame(x, group = rep(subtax.df[[1]],  each = n.out), stringsAsFactors = F)
+  colnames(subtax.df)[1] <- "group"
+  subtax.df %>%
+    full_join(x.df) -> tmp
+  return(tmp)
+}
+
+```
+
+Format plot functions
+```{r}
+make_phylum_background <- function(phylum.indx, curr.phylist, ymin, ymax, ylab, flipy, labelPhy){
+  
+  # curr.phylist <- phylist.l
+  # ymin <- -19
+  # ymax <- 8
+  
+  # make tissue-specific phylum.indx
+  if(flipy == FALSE){
+    phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  }
+  if(flipy == TRUE){
+    phylum.indx %>%
+      left_join(curr.phylist$phylum) %>%
+      arrange(order) %>%
+      filter(!is.na(mean.ax1)) %>%
+      mutate(max.ax1 = max.ax1*-1) %>% # flip the direction of the DPCoA axis
+      mutate(min.ax1 = min.ax1*-1) %>%
+      mutate(mean.ax1 = mean.ax1*-1) -> curr.phylum.indx
+  }
+  
+  # plot
+  p <- ggplot(data = curr.phylum.indx, 
+              mapping = aes(x = order, y = mean.ax1, color = phylum)) +
+    geom_point(pch = 3) +
+    geom_errorbar(aes(ymin = min.ax1, ymax = max.ax1)) +
+    theme_classic() +
+    ylab(ylab) +
+    # theme_void() +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank()) +
+    scale_color_manual(values = phylum.colors) +
+    guides(color = F) +
+    ylim(c(ymin, ymax))
+  p
+  if(labelPhy == TRUE){
+  p <- p + geom_text(aes(label = prettyname.short, hjust = 0.5, vjust = -.5, angle = 90), size = 3)
+  }
+  
+  return(p)
+  
+}
+
+make_biplot <- function(data, xcol, ycol, xlab, ylab, yrange, yaxlab, flipy, hexcol){
+  
+  # data <- post.s$mat.df
+  # ycol <- "Axis1"
+  # ylab <- "Soil fung DPCoA1"
+  # yrange <- y.range.s
+  # xcol <- "stand.age.yrs.num_trans"
+  # xlab <- "Stand age"
+
+  xcol <- data[,xcol]
+  ycol <- data[,ycol]
+  if(flipy == FALSE){
+    df <- data.frame(xcol = xcol, ycol=ycol)
+  }
+  if(flipy == TRUE){
+    df <- data.frame(xcol = xcol, ycol=ycol * -1)
+  }
+  p <- ggplot() + geom_point(data = df,
+                             mapping = aes(x = xcol, y = ycol),
+                             color = hexcol,
+                             inherit.aes = F) +
+    xlab(xlab) +
+    ylab(ylab) +
+    theme_classic() +
+    ylim(c(yrange[1], yrange[2]))
+
+  
+  if(yaxlab == FALSE){
+    p <- p + theme(axis.title.y=element_blank(),
+              axis.text.y = element_blank())
+  }
+  
+  return(p)
+}
+
+make_biplot_empty <- function(xlab, ylab, yrange, yaxlab){
+
+  p <- ggplot() + 
+    xlab(xlab) +
+    ylab(ylab) +
+    theme_classic() +
+    ylim(c(yrange[1], yrange[2]))
+  p
+  
+  if(yaxlab == FALSE){
+    p <- p + theme(axis.title.y=element_blank(),
+              axis.text.y = element_blank())
+  }
+  
+  return(p)
+}
+
+```
+
+Set phylum levels and colors
+```{r}
+#devtools::install_github("jaredhuling/jcolors")
+library(jcolors)
+jcolors("pal7")
+
+phylum.levels <- c("p__Ascomycota",
+                   "p__Basidiomycota",
+                   "p__Glomeromycota",
+                   "p__Chytridiomycota")
+
+phylum.colors <- c("#404285","#42858C","#570D32","#dd9933")
+
+names(phylum.colors) <- phylum.levels
+phylum.pretty <- c("Ascomycota","Basidiomycota","Glomeromycota","Chytridiomycota")
+phylum.indx <- data.frame(phylum = names(phylum.colors), phylum.colors, 
+                          stringsAsFactors = F, 
+                          row.names = NULL)
+phylum.indx %>%
+  separate(phylum, into = c(NA,"prettyname"), sep = "__", remove = F) %>%
+  mutate(order = seq(1:4)) -> phylum.indx
+phylum.indx$prettyname.short <- c("Asco","Basidio","Glomero","Chytridio")
+phylum.indx
+
+
+```
+
+
+## 2. Make plotting dataframes -- samples
+```{r}
+
+# leaf
+post.l <- format_postsem_dfs(mat.path = "leaf_dpcoa_SEMdata.csv", 
+                           ps.path = "phyloseq_samps_env_trimTreeASVs_leaf.RData",
+                           dpcoa.path = "output/illumina/Q0/dpcoa_leaf.RData", 
+                           attr.path = "scaledmat_l.RData")
+phylist.l <- format_phySumms(asv.df = post.l$asv.df, rescale = FALSE)
+phylist.l
+# root
+post.r <- format_postsem_dfs(mat.path = "root_dpcoa_SEMdata.csv", 
+                           ps.path = "phyloseq_samps_env_trimTreeASVs_root.RData",
+                           dpcoa.path = "output/illumina/Q0/dpcoa_root.RData", 
+                           attr.path = "scaledmat_r.RData")
+phylist.r <- format_phySumms(asv.df = post.r$asv.df, rescale = F)
+
+# soil
+post.s <- format_postsem_dfs(mat.path = "soil_dpcoa_SEMdata.csv", 
+                           ps.path = "phyloseq_samps_env_trimTreeASVs_soil.RData",
+                           dpcoa.path = "output/illumina/Q0/dpcoa_soil.RData", 
+                           attr.path = "scaledmat_s.RData")
+phylist.s <- format_phySumms(asv.df = post.s$asv.df, rescale = F)
+
+```
+
+
+## 3. Make plotting dataframes and set up universal scale -- ASVs
+
+*by class* -- need to update
+```{r}
+
+phylist.l$class %>%
+  mutate(class = ifelse(is.na(class), "c__unidentified", class)) %>%
+  separate(class, into = c(NA,"prettyname"), remove = F, sep = "__") %>%
+  mutate(diff = max.ax1 - min.ax1) %>%
+  arrange(-diff) %>%
+  mutate(order = seq(1, dim(phylist.l$class)[1])) -> tmp
+
+p.dpcoa2 <- ggplot(data = tmp, 
+       mapping = aes(x = order, y = mean.ax1, color = class)) +
+  geom_point(pch = 3) +
+  geom_errorbar(aes(ymin = min.ax1, ymax = max.ax1)) +
+  geom_text(aes(label = prettyname, hjust = 0.5, vjust = 1.5, angle = 90)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  guides(color=F) +
+  ylab("Leaf fungi DPCoA1 (scaled)")
+p.dpcoa2
+ggsave(file.path(out_path, "bivarsem_l_class.pdf"), width = 8, height = 6)
+tmp.c <- tmp
+
+```
+
+*by phylum*
+```{r}
+
+# leaf
+vals <- c(range(post.l$mat.df$Axis1), range(post.l$asv.df$CS1))
+range(vals)
+ymin <- -19
+ymax <- 8
+y.range.l <- c(ymin, ymax)
+p.phylum.l <- make_phylum_background(phylum.indx, curr.phylist = phylist.l, 
+                                     ymin=ymin, ymax=ymax, flipy = FALSE, 
+                                     ylab = "Leaf fungi DPCoA1", labelPhy = FALSE)
+p.phylum.l
+
+# for main SEM figure
+  # make tissue-specific phylum.indx
+curr.phylist <- phylist.l
+phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  
+# plot
+curr.phylum.indx %>%
+  mutate(mid = (max.ax1 - min.ax1)/2) -> tmp
+tmp[2,"mid"] <- tmp[2,"mid"] * -1
+tmp$order <- c(1,1.5,2)
+tmp %>%
+  mutate(prettyname.short2 = ifelse(prettyname.short == "Chytridio", " ", prettyname.short)) -> tmp
+
+
+p <- ggplot(data = tmp, 
+            mapping = aes(y = rev(order), x = mean.ax1, color = phylum)) +
+  geom_point(pch = 3) +
+  geom_errorbarh(aes(xmin = min.ax1, xmax = max.ax1), height = .3) +
+  geom_text(aes(y = rev(order), x = mid, 
+                label = prettyname.short2), size = 6, vjust = -1) +
+  theme_classic() +
+  ylab(NULL) + xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line.y = element_blank()) +
+  scale_color_manual(values = phylum.colors) +
+  guides(color = F) +
+  scale_x_continuous(position = "top", limits = c(ymin, ymax)) +
+  ylim(c(0.5, 2.25)) +
+  annotate("text", x = -5, y = 1, label = "Chytridio", size = 6, color = "#dd9933")
+p
+ggsave(p, filename = file.path(out_path, "leaf_semLabel.png"), 
+       width = 3.5, height = 2.5)
+  
+
+# root
+vals <- c(range(post.r$mat.df$Axis1), range(post.r$asv.df$CS1))
+range(vals)
+ymin <- -14
+ymax <- 12
+y.range.r <- c(ymin, ymax)
+p.phylum.r <- make_phylum_background(phylum.indx, curr.phylist = phylist.r, 
+                                     ymin=ymin, ymax=ymax, flipy = FALSE,
+                                     ylab = "Root fungi DPCoA1", labelPhy = FALSE)
+p.phylum.r
+# for main SEM figure
+  # make tissue-specific phylum.indx
+curr.phylist <- phylist.r
+phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  
+# plot
+curr.phylum.indx %>%
+  mutate(mid = (max.ax1 - min.ax1)/2 + min.ax1) -> tmp
+tmp
+tmp[3,"mid"] <- tmp[3,"mid"] * -0.1
+tmp$order <- c(2,1,1.5,.5)
+p <- ggplot(data = tmp, 
+            mapping = aes(y = order, x = mean.ax1, color = phylum)) +
+  geom_point(pch = 3) +
+  geom_errorbarh(aes(xmin = min.ax1, xmax = max.ax1), height = .3) +
+  geom_text(aes(y = order, x = mid, 
+                label = prettyname.short), size = 6, vjust = -1) +
+  theme_classic() +
+  ylab(NULL) + xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line.y = element_blank()) +
+  scale_color_manual(values = phylum.colors) +
+  guides(color = F) +
+  scale_x_continuous(position = "top", limits = c(ymin, ymax)) +
+  ylim(c(0, 2.5))
+p
+ggsave(p, filename = file.path(out_path, "root_semLabel.png"), 
+       width = 3.5, height = 3)
+
+# soil
+vals <- c(range(post.s$mat.df$Axis1), range(post.s$asv.df$CS1))
+range(vals)
+ymin <- -17 # remember that I will be fliping the y scale
+ymax <- 8
+y.range.s <- c(ymin, ymax)
+p.phylum.s <- make_phylum_background(phylum.indx, curr.phylist = phylist.s, 
+                                     ymin=ymin, ymax=ymax, flipy = TRUE,
+                                     ylab = "Soil fungi DPCoA1", labelPhy = FALSE)
+p.phylum.s
+
+# for main SEM figure
+  # make tissue-specific phylum.indx
+curr.phylist <- phylist.s
+phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  
+# plot
+curr.phylum.indx %>%
+  mutate(mid = (max.ax1 - min.ax1)/2 + min.ax1) -> tmp
+tmp
+tmp[3,"mid"] <- tmp[3,"mid"] * -0.1
+tmp$order <- c(2,1,1.5,.5)
+p <- ggplot(data = tmp, 
+            mapping = aes(y = order, x = mean.ax1*-1, color = phylum)) +
+  geom_point(pch = 3) +
+  geom_errorbarh(aes(xmin = min.ax1*-1, xmax = max.ax1*-1), height = .3) +
+  geom_text(aes(y = order, x = mid*-1, 
+                label = prettyname.short), size = 6, vjust = -1) +
+  theme_classic() +
+  ylab(NULL) + xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line.y = element_blank()) +
+  scale_color_manual(values = phylum.colors) +
+  guides(color = F) +
+  scale_x_continuous(position = "top", limits = c(ymin, ymax)) +
+  ylim(c(0, 2.5))
+p
+ggsave(p, filename = file.path(out_path, "soil_semLabel.png"), 
+       width = 3.5, height = 3)
+
+```
+
+## 4. Plot -- Direct only
+
+tissue colors
+```{r}
+tissue.colors <- c("#288737", "#4678a8", "#cbba4e")
+names(tissue.colors) <- c("L","R","S")
+```
+
+*Leaf*
+```{r}
+data <- post.l$mat.df
+ycol <- "Axis1"
+ylab <- "Leaf fungi DPCoA1"
+yrange <- y.range.l
+xcols.base <- c("max.height.m","ph","K","P")
+xlabs <- c("Plant height (m)","Soil pH", "Soil K (log ug/g)", 
+           "Soil P (log ug/g)")
+x.df <- data.frame(xcols.base, xlabs)
+x.df %>%
+  mutate(xcols = paste0(xcols.base, "_trans")) -> x.df
+x.df
+
+pl.list <- list()
+for(i in 1:length(xcols.base)){
+  pl.list[[i]] <- make_biplot(data = data, 
+            xcol = x.df[i,"xcols"], ycol = ycol,
+            xlab = x.df[i,"xlabs"], ylab = ylab,
+            yrange = yrange, yaxlab = FALSE, flipy = FALSE, hexcol = tissue.colors[1])
+}
+names(pl.list) <- x.df$xcols.base
+
+# empty plot
+pl.empty <- make_biplot_empty(xlab = xlabs[1], ylab= ylab, yrange = y.range.l, yaxlab = FALSE)
+pl.empty + theme_void()
+
+#require(ggpubr)
+#l.row <- ggarrange(p.phylum.l, plotlist = pl.list, nrow = 1, align = "h")
+
+```
+
+*Root*
+```{r}
+data <- post.r$mat.df
+ycol <- "Axis1"
+ylab <- "Root fungi DPCoA1"
+yrange <- y.range.r
+xcols.base <- c("max.height.m","ph","Mn","perc.clay")
+xlabs <- c("Plant height (m)","Soil pH", "Soil Mn (log ug/g)", 
+           "Clay (logit %)")
+x.df <- data.frame(xcols.base, xlabs)
+x.df %>%
+  mutate(xcols = paste0(xcols.base, "_trans")) -> x.df
+
+pr.list <- list()
+for(i in 1:length(xcols.base)){
+  pr.list[[i]] <- make_biplot(data = data, 
+            xcol = x.df[i,"xcols"], ycol = ycol,
+            xlab = x.df[i,"xlabs"], ylab = ylab,
+            yrange = yrange, yaxlab = FALSE, flipy = FALSE, hexcol = tissue.colors[2])
+}
+names(pr.list) <- x.df$xcols.base
+
+# empty plot
+pr.empty <- make_biplot_empty(xlab = xlabs[1], ylab= ylab, yrange = y.range.r, yaxlab = FALSE)
+
+#require(ggpubr)
+#r.row <- ggarrange(p.phylum.r, plotlist = pr.list, nrow = 1, align = "h")
+#r.row
+
+```
+
+*Soil*
+```{r}
+data <- post.s$mat.df
+ycol <- "Axis1"
+ylab <- "Soil fungi DPCoA1"
+yrange <- y.range.s
+xcols.base <- c("stand.age.yrs.num","Cu","TIN","doc","perc.clay")
+xlabs <- c("Stand age (log yrs)","Soil Cu (log ug/g)", 
+           "Soil TIN (log ug/g)", 
+           "Soil DOC (log ug/g)", 
+           "Clay (logit %)")
+x.df <- data.frame(xcols.base, xlabs)
+x.df %>%
+  mutate(xcols = paste0(xcols.base, "_trans")) -> x.df
+
+ps.list <- list()
+for(i in 1:length(xcols.base)){
+  ps.list[[i]] <- make_biplot(data = data, 
+            xcol = x.df[i,"xcols"], ycol = ycol,
+            xlab = x.df[i,"xlabs"], ylab = ylab,
+            yrange = yrange, yaxlab = FALSE, flipy = TRUE, hexcol = tissue.colors[3])
+}
+names(ps.list) <- x.df$xcols.base
+
+# empty plot
+ps.empty <- make_biplot_empty(xlab = xlabs[1], ylab= ylab, yrange = y.range.s, yaxlab = FALSE)
+ps.empty + theme_void()
+
+# require(ggpubr)
+# s.row <- ggarrange(p.phylum.s, plotlist = ps.list, nrow = 1, align = "h")
+# s.row
+```
+
+save the plots
+```{r}
+require(ggpubr)
+
+bigthing <- ggarrange(
+  
+  p.phylum.l,
+  pl.list$max.height.m, pl.list$ph, pl.list$K, pl.list$P, 
+  pl.empty + theme_void(),
+  
+  p.phylum.r,
+  pr.list$max.height.m, pr.list$ph, pr.list$Mn, pr.list$perc.clay,
+  pr.empty + theme_void(),
+  
+  p.phylum.s,
+  ps.list$stand.age.yrs.num, ps.list$Cu, ps.list$TIN, ps.list$doc, ps.list$perc.clay, 
+  
+  nrow = 3, ncol = 6, align = "h", widths = c(.6, 1,1,1,1,1)
+)
+#bigthing
+
+ggsave(bigthing, filename = file.path(out_path, "bivariateSEM_lrs.png"), 
+         width = 9.7, height = 5.5)
+
+```
+
+
+## 5. Plot -- Indirect only
+
+*Leaf*
+```{r}
+# height x ph
+pl.height <- ggplot(post.l$mat.df, aes(x = max.height.m_trans, y = Axis1, 
+                             color = ph_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Leaf fungi DPCoA1") + xlab("Plant height (m)") +
+  scale_color_viridis_c(name = "Soil pH") +
+  ylim(ymin = y.range.l[1], ymax = y.range.l[2])
+pl.height
+
+# P x sand
+pl.P <- ggplot(post.l$mat.df, aes(x = P_trans, y = Axis1, 
+                          color = perc.sand_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Leaf fungi DPCoA1") + xlab("Soil P (log mg/dm3)") +
+  scale_color_viridis_c(name = "Sand (%^3)") +
+  ylim(ymin = y.range.l[1], ymax = y.range.l[2])
+pl.P
+
+```
+
+*Root*
+```{r}
+
+# height x ph
+pr.height <- ggplot(post.r$mat.df, aes(x = max.height.m_trans, y = Axis1, 
+                             color = ph_trans, size = Mn_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Root fungi DPCoA1") + xlab("Plant height (m)") +
+  scale_color_viridis_c(name = "Soil pH") +
+  scale_size_continuous(name = "Soil Mn (log+1 mg/dm3)") +
+  ylim(ymin = y.range.r[1], ymax = y.range.r[2])
+pr.height
+
+```
+
+*Soil*
+```{r}
+# remember to flip the yaxis
+
+# stand age x Cu
+ps.Cu <- ggplot(post.s$mat.df, aes(x = Cu_trans, y = Axis1*-1, 
+                             color = stand.age.yrs.num_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil fungi DPCoA1") + xlab("Soil Cu (log mg/dm3)") +
+  scale_color_viridis_c(name = "Stand age (log+1 yrs)") +
+  ylim(ymin = y.range.s[1], ymax = y.range.s[2])
+ps.Cu
+
+# DOC x clay
+ps.doc <- ggplot(post.s$mat.df, aes(x = doc_trans, y = Axis1*-1, 
+                             color = perc.clay_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil fungi DPCoA1") + xlab("Soil DOC (log+1 ug/g)") +
+  scale_color_viridis_c(name = "Clay (log+1 %)") +
+  ylim(ymin = y.range.s[1], ymax = y.range.s[2])
+ps.doc
+
+
+```
+
+save the plots
+```{r}
+require(ggpubr)
+
+bigthing <- ggarrange(
+  
+  p.phylum.l, pl.height + guides(color = F, size = F) + 
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank()),
+  
+  p.phylum.r, pr.height + guides(color = F, size = F) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank()),
+  
+  p.phylum.s, ps.Cu + guides(color = F, size = F) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank()),
+  
+  nrow = 3, ncol = 2, align = "h", widths = c(0.6, 1)
+)
+bigthing
+
+leg.pl.height <- get_legend(pl.height)
+leg.pr.height <- get_legend(pr.height)
+leg.ps.Cu <- get_legend(ps.Cu)
+
+leg <- ggarrange(
+  as_ggplot(leg.pl.height),
+  as_ggplot(leg.pr.height),
+  as_ggplot(leg.ps.Cu),
+  
+  nrow = 3, ncol = 1
+)
+
+together <- ggarrange(bigthing, leg, ncol = 2, widths = c(1,.3))
+ggexport(together, filename = file.path(out_path, "bivariateSEM_lrs_plantint.pdf"), width = 7, height = 8)
+
+```
+
+add plots that show relevant correlations between predictor vars
+```{r}
+
+heightVph <- ggplot(post.r$mat.df, aes(x = max.height.m_trans, y = ph_trans, shape = mono.mixed)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil pH") + xlab("Plant height (m)") +
+  scale_shape_discrete(name = "Stand type")
+heightVph 
+
+heightVMn <- ggplot(post.r$mat.df, aes(x = max.height.m_trans, y = Mn_trans, shape = mono.mixed)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil Mn (log+1 mg/dm3)") + xlab("Plant height (m)") +
+  scale_shape_discrete(name = "Stand type")
+heightVMn
+
+standageVcu <- ggplot(post.s$mat.df, aes(x = Cu_trans, y = stand.age.yrs.num_trans, shape = mono.mixed)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Stand age (log+1 yrs)") + xlab("Soil Cu (mg/dm3)") +
+  scale_shape_discrete(name = "Stand type")
+standageVcu 
+
+both <- ggarrange(heightVph, heightVMn, standageVcu, nrow = 3, common.legend = T)
+both
+ggexport(both, filename = file.path(out_path, "bivariateSEM_plantint_corrVars.pdf"), width = 3.5, height = 8)
+
+
+```
+
+_______________________________
+# D. Investigate SEM results with HMSC
+
+## 1. Set up HMSC analyses on the HPC
+
+## 2. Examine HMSC output 
+
+Examine mixing
+```{r}
+# # Examine fit
+library(MCMCpack)
+library(MCMCvis)
+library(Hmsc)
+
+summ_geldiag <- function(post){
+  
+  #Approximate convergence is diagnosed when the upper limit is close to 1.
+  # These are all close to 1
+  gel <- gelman.diag(post$Beta, multivariate = F)
+  # Error in chol.default(W) : the leading minor of order 2997 is not positive definite # this is probably because there were NAs... set multivariate to false
+  gel.gam<- gelman.diag(post$Gamma, multivariate = F)
+  gel.v <- gelman.diag(post$V, multivariate = F)
+  gel.s <- gelman.diag(post$Sigma, multivariate = F)
+  gel.rho <- gelman.diag(post$Rho, multivariate = F)
+  
+  geldiag.list <- list(Beta = gel$psrf[,1],
+                       Gamma = gel.gam$psrf[,1],
+                       V = gel.v$psrf[,1],
+                       Sigma = gel.s$psrf[,1],
+                       Rho = gel.rho$psrf[,1])
+  
+  return(geldiag.list)
+  
+}
+
+# leaf
+# abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_leaf.RData")
+# post <- convertToCodaObject(m.l)
+# geldiag.list.l <- summ_geldiag(post)
+# saveRDS(geldiag.list.l, file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_leaf.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_leaf.pdf", 
+#     width = 4, height = 4)
+# boxplot(geldiag.list.l, main = "Leaf")
+# dev.off()
+# # presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# post <- convertToCodaObject(m.l)
+# geldiag.list.l <- summ_geldiag(post)
+# saveRDS(geldiag.list.l, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_leaf.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_leaf.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.l, main = "Leaf")
+# dev.off()
+
+
+# root
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_root.RData")
+# post <- convertToCodaObject(m.r)
+# geldiag.list.r <- summ_geldiag(post)
+# saveRDS(geldiag.list.r, file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_root.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_root.pdf", 
+#     width = 5, height = 4)
+# boxplot(geldiag.list.r, main = "Root")
+# dev.off()
+# presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# post <- convertToCodaObject(m.r)
+# geldiag.list.r <- summ_geldiag(post)
+# saveRDS(geldiag.list.r, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_root.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_root.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.r, main = "Root")
+# dev.off()
+
+# soil
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# post <- convertToCodaObject(m.s)
+# geldiag.list.s <- summ_geldiag(post)
+# saveRDS(geldiag.list.s, file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/geldiag_soil.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/geldiag_soil.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.s, main = "Soil")
+# dev.off()
+# presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# post <- convertToCodaObject(m.s)
+# geldiag.list.s <- summ_geldiag(post)
+# saveRDS(geldiag.list.s, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_soil.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_soil.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.s, main = "Soil")
+# dev.off()
+
+# these gelman diagnostic plots are called psrf = "potential scale reduction factors"
+```
+
+Examine model fit
+```{r}
+
+# # leaf
+# abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_leaf.RData")
+# waic.l <- computeWAIC(m.l)
+# waic.l
+# preds <- computePredictedValues(m.l)
+# fit <- evaluateModelFit(m.l, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$R2, na.rm = T)
+# fit$waic <- waic.l
+#saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits/out/fit_leaf.RData")
+# presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# waic.l <- computeWAIC(m.l)
+# waic.l
+# preds <- computePredictedValues(m.l)
+# fit <- evaluateModelFit(m.l, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$AUC, na.rm = T)
+# fit$waic <- waic.l
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_leaf.RData")
+
+# # root
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_root.RData")
+# waic.r <- computeWAIC(m.r)
+# waic.r
+# preds <- computePredictedValues(m.r)
+# fit <- evaluateModelFit(m.r, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$R2, na.rm = T)
+# fit$waic <- waic.r
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits/out/fit_root.RData")
+# presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# waic.r <- computeWAIC(m.r)
+# waic.r
+# preds <- computePredictedValues(m.r)
+# fit <- evaluateModelFit(m.r, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$AUC, na.rm = T)
+# fit$waic <- waic.r
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_root.RData")
+
+# # soil
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# waic.s <- computeWAIC(m.s)
+# waic.s
+# preds <- computePredictedValues(m.s)
+# fit <- evaluateModelFit(m.s, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$R2, na.rm = T)
+# fit$waic <- waic.s
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_soil.RData")
+# presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# waic.s <- computeWAIC(m.s)
+# waic.s
+# preds <- computePredictedValues(m.s)
+# fit <- evaluateModelFit(m.s, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$AUC, na.rm = T)
+# fit$waic <- waic.s
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_soil.RData")
+
+
+fit.la <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_leaf.RData")
+fit.lp <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_leaf.RData")
+fit.ra <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_root.RData")
+fit.rp <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_root.RData")
+fit.sa <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_soil.RData")
+fit.sp <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_soil.RData")
+
+fit.list <- list(la = fit.la, lp = fit.lp,
+                 ra = fit.ra, rp = fit.rp,
+                 sa = fit.sa, sp = fit.sp)
+fit.df <- data.frame(
+  rmse = lapply(fit.list, function(x){mean(x$RMSE, na.rm = T)}),
+  r2 = lapply(fit.list, function(x){mean(x$R2, na.rm = T)}),
+  auc = lapply(fit.list, function(x){mean(x$AUC, na.rm = T)}),
+  waic =  lapply(fit.list, function(x){x$waic}),
+  stringsAsFactors = F)
+fit.df %>%
+  gather(key = "term", value = "value") %>%
+  separate(term, into = c("measure","mod")) %>%
+  separate(mod, into = c("tissue","model"), sep = 1) %>%
+  mutate(tissue = ifelse(tissue == "l", "Leaf",
+                         ifelse(tissue == "r", "Root", "Soil"))) %>%
+  mutate(model = ifelse(model == "a", "Abundance", "Presence")) %>%
+  spread(key = measure, value = value) %>%
+  dplyr::select(tissue, model, waic, rmse, r2, auc) -> fit.df
+write.csv(fit.df, file = file.path(out_path, "hmsc_fits.csv"))
+
+```
+
+Examine "species niches" as structured by phylogeny
+```{r}
+
+# leaf
+# abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_leaf.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.l, parName = "Beta") 
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/Beta_leaf.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.l, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95, 
+#          split = 0.4, 
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.l)
+# summary(mpost$Rho)$quantiles
+# presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.l, parName = "Beta") 
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/Beta_leaf.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.l, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95, 
+#          split = 0.4, 
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.l)
+# summary(mpost$Rho)$quantiles
+
+# root
+#m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_root.RData")
+# plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.r, parName = "Beta") 
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/Beta_root.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.r, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95, 
+#          split = 0.4, 
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.r)
+# summary(mpost$Rho)$quantiles
+# presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.r, parName = "Beta")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/Beta_root.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.r, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95,
+#          split = 0.4,
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.r)
+# summary(mpost$Rho)$quantiles
+
+# soil
+# abundance
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/Beta_soil.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.s, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95,
+#          split = 0.4,
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.s)
+# summary(mpost$Rho)$quantiles
+# presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/Beta_soil.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.s, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95,
+#          split = 0.4,
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.s)
+# summary(mpost$Rho)$quantiles
+
+```
+
+Plot the distribution of the rho parameter for each model
+```{r}
+m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_leaf.RData")
+mpost.la <- convertToCodaObject(m)
+m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+mpost.lp <- convertToCodaObject(m)
+
+m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_root.RData")
+mpost.ra <- convertToCodaObject(m)
+m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+mpost.rp <- convertToCodaObject(m)
+
+m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+mpost.sa <- convertToCodaObject(m)
+m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+mpost.sp <- convertToCodaObject(m)
+
+df <- data.frame(quant = names(summary(mpost.la$Rho)$quantiles),
+                 la = summary(mpost.la$Rho)$quantiles,
+           lp = summary(mpost.lp$Rho)$quantiles,
+           ra = summary(mpost.ra$Rho)$quantiles,
+           rp = summary(mpost.rp$Rho)$quantiles,
+           sa = summary(mpost.sa$Rho)$quantiles,
+           sp = summary(mpost.sp$Rho)$quantiles,
+           row.names = NULL, stringsAsFactors = F)
+df
+df %>%
+  gather(key = "type", value = "rho", -quant) %>%
+  separate(type, into = c("tissue","model"), sep = 1) %>%
+  mutate(tissue = ifelse(tissue == "l", "Leaf",
+                         ifelse(tissue == "r", "Root",
+                                ifelse(tissue == "s", "Soil", NA)))) %>%
+  mutate(model = ifelse(model == "a", "Abundance",
+                        ifelse(model == "p", "Presence-absence", NA))) %>%
+  spread(key = quant, value = rho) %>%
+  mutate(model.num = ifelse(model == "Abundance", 1, 2))-> df.plot
+
+colnames(df.plot)
+
+offset <- 0.1
+names(tissue.colors) <- c("Leaf","Root", "Soil")
+
+p <- ggplot(df.plot, aes(x = model.num, y = `50%`, color = tissue)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = `2.5%`, ymax = `97.5%`), width = .1) +
+  geom_rect(aes(ymin = `25%`, ymax = `75%`, 
+                xmin = model.num - offset, xmax = model.num + offset), 
+            fill = "transparent") +
+  facet_grid(~tissue) +
+  ylab("Rho estimate (quantiles)") +
+  xlab("Model type") +
+  scale_x_continuous(breaks = c(1,2), 
+                     labels = c("Abundance","Presence\n-absence"),
+                     limits = c(0.5,2.5)) +
+  scale_color_manual(values = tissue.colors) +
+  theme_classic() +
+  guides(color = F)
+p
+
+ggsave(p, filename = file.path(out_path, "hmsc_rho.png"),
+       width = 5, height = 3.5)
+```
+
+Print tables
+*leaf*
+```{r}
+#abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_leaf.RData")
+# postBeta = getPostEstimate(m.l, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.l$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.l$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.l$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_leaf.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Abundance") -> df.l.signif.ab
+
+
+# presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# postBeta = getPostEstimate(m.l, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.l$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.l$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.l$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# 
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_leaf.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Presence") -> df.l.signif.pr
+# 
+# df <- rbind(df.l.signif.ab, df.l.signif.pr)
+# # write.csv(df.l.signif, file = file.path(out_path, "hmsc_leaf_pr.csv"))
+# write.csv(df, file = file.path(out_path, "hmsc_leaf.csv"))
+
+```
+*root*
+```{r}
+#abundance
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_root.RData")
+# postBeta = getPostEstimate(m.r, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.r$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.r$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.r$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_root.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Abundance") -> df.l.signif.ab
+
+# # presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# postBeta = getPostEstimate(m.r, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.r$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.r$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.r$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# 
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_root.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Presence") -> df.l.signif.pr
+# 
+# df <- rbind(df.l.signif.ab, df.l.signif.pr)
+# write.csv(df, file = file.path(out_path, "hmsc_root.csv"))
+
+```
+*soil*
+```{r}
+# #abundance
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.s$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.s$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.s$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_soil.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Abundance") -> df.l.signif.ab
+# dim(df.l.signif.ab)
+
+# # presence/absence
+m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+postBeta = getPostEstimate(m.s, parName = "Beta")
+names(postBeta)
+# create DF of ASV-environment relationships
+df.m <- data.frame(term = colnames(m.s$X), postBeta$mean)
+df.m %>%
+  gather(key = "ASV", value = "mean", -term) -> df.m.l
+df.u <- data.frame(term = colnames(m.s$X), postBeta$support)
+df.u %>%
+  gather(key = "ASV", value = "support", -term) -> df.u.l
+df.l <- data.frame(term = colnames(m.s$X), postBeta$supportNeg)
+df.l %>%
+  gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+df.m.l %>%
+  left_join(df.u.l) %>%
+  left_join(df.l.l) -> df.l
+df.l %>%
+  mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+  mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+  mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+  filter(signif == TRUE) %>%
+  #filter(!term %in% c("(Intercept)","lib")) %>%
+  separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+
+# add ASV taxonomy info
+ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_soil.RData")
+tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+df.l.signif %>%
+  left_join(tax) %>%
+  dplyr::select(-phylum.fromBlast) %>%
+  arrange(term, mean) %>%
+  mutate(model = "Presence") -> df.l.signif.pr
+dim(df.l.signif.pr)
+
+df <- rbind(df.l.signif.ab, df.l.signif.pr)
+dim(df)
+write.csv(df, file = file.path(out_path, "hmsc_soil.csv"))
+```
+
+## 3. Prune to high confidence taxa-environment relationships
+```{r}
+
+df.l <- read.csv(file = file.path(out_path, "hmsc_leaf.csv"))
+df.r <- read.csv(file = file.path(out_path, "hmsc_root.csv"))
+df.s <- read.csv(file = file.path(out_path, "hmsc_soil.csv"))
+df.l$tissue <- "l"
+df.r$tissue <- "r"
+df.s$tissue <- "s"
+df <- rbind(df.l, df.r, df.s)
+dim(df)
+df %>%
+  dplyr::select(-X) %>%
+  filter(!term %in% c("(Intercept)","lib")) -> df
+dim(df)
+sel <- df$model == "Presence" & df$sign == "positive" & df$support < 0.99
+df <- df[!sel,]
+sel <- df$model == "Presence" & df$sign == "negative" & df$supportNeg < 0.99
+df <- df[!sel,]
+dim(df)
+
+df %>%
+  group_by(tissue, model, sign) %>%
+  summarize(n = length(ASV))
+
+# reshape
+df %>%
+  mutate(support.all = ifelse(sign == "positive", support, supportNeg)) %>%
+  dplyr::select(-c(support, supportNeg, signif)) %>%
+  mutate(tissue = ifelse(tissue == "l","Leaf",
+                         ifelse(tissue == "r", "Root", "Soil"))) %>%
+  dplyr::select(tissue, model, term, ASV, mean, sign, support.all, 
+                kingdom, phylum, class, order, family, genus, species, CS1) -> df
+write.csv(df, file = file.path(out_path, "hmsc_ASVtable_subset.csv"))
+
+```
+
+## 4. Make phylogenetic tree/heat map plots
+
+Reformat the data matrix so that each row is an ASV. Also, add "ns" where ASV is present but not significant
+```{r}
+# which ASVs are present/absent across tissues?
+ps.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/data/phyloseq_withSEMdata_leaf.RData")
+asvs.l <- taxa_names(ps.l)
+asvs.l <- data.frame(tissue = "Leaf", ASV = asvs.l, stringsAsFactors = F)
+ps.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/data/phyloseq_withSEMdata_root.RData")
+asvs.r <- taxa_names(ps.r)
+asvs.r <- data.frame(tissue = "Root", ASV = asvs.r, stringsAsFactors = F)
+ps.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/data/phyloseq_withSEMdata_soil.RData")
+asvs.s <- taxa_names(ps.s)
+asvs.s <- data.frame(tissue = "Soil", ASV = asvs.s, stringsAsFactors = F)
+asvs.df <- rbind(asvs.l, asvs.r, asvs.s)
+
+# add info about ASV-environ relationships
+df.l.signif <- read.csv(file = file.path(out_path, "hmsc_ASVtable_subset.csv"), row.names = 1, stringsAsFactors = F)
+
+# function to fill in "ns" if ASV is present
+fill_ns <- function(tmp, grepl.x){
+  
+  #tmp = asv.df2.abund
+  #grepl.x = "Leaf"
+  
+  cols <- colnames(tmp)[grepl(grepl.x,colnames(tmp))]
+  if(grepl.x == "Leaf"){
+    rows <- tmp$tissue == "Leaf"
+  }
+  if(grepl.x == "Root"){
+    rows <- tmp$tissue == "Root"
+  }
+  if(grepl.x == "Soil"){
+    rows <- tmp$tissue == "Soil"
+  }
+  for(i in 1:length(cols)){
+    cols[i]
+    x <- is.na(tmp[rows,cols[i]])
+    tmp[rows,cols[i]][x] <- "ns"
+  }
+  return(tmp)
+}
+
+# function to reshape for plotting
+reshape_asvSign_df <- function(df.l.signif, asvs.df, curr.model){
+  
+  # select data for the current model type (Abundance/Presence)
+  df.l.signif %>%
+    filter(model == curr.model) %>%
+    dplyr::select(tissue, ASV, term, sign) -> df.l.tmp
+  
+  # add the significant sign relationships to the full table of ASVs
+  # create the tissue.term variable
+  asvs.df %>%
+    left_join(df.l.tmp) %>%
+    mutate(tissue.term = paste0(tissue, "__",term)) %>%
+    select(-term) %>%
+    spread(key = tissue.term, value = sign) -> asv.df1
+  # remove NAs in tissue.term variable
+  asv.df2 <- asv.df1[,!colnames(asv.df1) %in% c("Leaf__NA","Root__NA","Soil__NA")]
+  
+  # add any missing tissue.term levels as columns of NA
+  ttl.indx <- unique(df.l.signif[,c("term","tissue")])
+  ttl.indx %>%
+    mutate(tissue.term = paste0(tissue, "__",term)) -> ttl.indx
+  missing.cols <- ttl.indx$tissue.term[!ttl.indx$tissue.term %in% colnames(asv.df2)]
+  # add cols with only ns
+  new.cols <- matrix(NA, nrow = dim(asv.df2)[1], ncol = length(missing.cols))
+  colnames(new.cols) <- missing.cols
+  asv.df2 <- cbind(asv.df2, new.cols)
+  
+  # fill in NAs with "ns" if the ASV is present in the leaf/root/soil
+  asv.df2 <- fill_ns(tmp = asv.df2, grepl.x = "Leaf")
+  asv.df2 <- fill_ns(tmp = asv.df2, grepl.x = "Root")
+  asv.df2 <- fill_ns(tmp = asv.df2, grepl.x = "Soil")
+
+  # reshape so that each ASV is a row
+  asv.df2 %>%
+    gather(key = "tissue.term", value = "sign", -c(tissue, ASV)) %>%
+    filter(!is.na(sign)) %>%
+    select(-tissue) %>%
+    spread(key = tissue.term, value = sign) -> asv.currmod
+  
+  return(asv.currmod)
+  
+}
+
+# make dfs
+asv.abund <- reshape_asvSign_df(df.l.signif, asvs.df, curr.model = "Abundance")
+asv.pres <- reshape_asvSign_df(df.l.signif, asvs.df, curr.model = "Presence")
+
+```
+
+Make the phylogenetic tree -- define the data matrix, phylum nodes, and key classes
+```{r}
+library(ggtree)
+library(cowplot)
+library(aplot) # for ylim2()
+library(phangorn) # for Decendents and Siblings
+
+phylum.levels <- c("p__Ascomycota",
+                   "p__Basidiomycota",
+                   "p__Glomeromycota",
+                   "p__Chytridiomycota")
+phylum.colors <- c("#404285","#42858C","#570D32","#dd9933")
+
+
+# load data
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+tree <- ape::read.nexus(file = "data_intermediates/phylogeneticTree/asv_tax_nounkp_formated.tre")
+
+# make the basic tree and tree data from the phyloseq object
+asvs <- taxa_names(ps)
+tree <- ape::keep.tip(tree, asvs)
+phy_tree(ps)<- tree
+p.tree <- ggtree(ps, ladderize = T) 
+p.tree$data %>%
+  select(label, node, isTip, x, y, ASV, phylum, class, order, family, genus, species) %>%
+  unique() -> tree.dat
+
+# find the phylum nodes
+x <- tree.dat$isTip == TRUE & tree.dat$phylum == "p__Ascomycota"
+asco.node <- MRCA(tree, tree.dat[x,"node"])
+phy.nodes <- Siblings(tree, asco.node, include.self = T)
+length(phy.nodes)
+phy.id <- list()
+phy.asvs<- list()
+i<-1
+for(i in 1:length(phy.nodes)){
+  tree.dat %>%
+    filter(node %in% Descendants(tree, phy.nodes[[i]], type = "tips")[[1]]) -> sel.tips
+  phy.id[[i]]<- as.character(unique(sel.tips$phylum))
+  phy.asvs[[i]] <- as.character(sel.tips$ASV)
+}
+phylum.indx <- data.frame(node = phy.nodes, phylum = unlist(phy.id))
+phylum.indx
+phylum.indx %>%
+  separate(phylum, into = c(NA, "phylum.name"), remove = F) -> phylum.indx
+names(phy.asvs) <- phylum.indx$phylum.name
+
+phy.asvs
+Mucoro.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Mucoromycota[[1]],"node"]
+Basidiobolo.node <- tree.dat[tree.dat$isTip == TRUE & tree.dat$ASV == phy.asvs$Basidiobolomycota[[1]],"node"]
+Blastocladio.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Blastocladioomycota[[1]],"node"]
+Entorrhizo.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Entorrhizomycota[[1]],"node"]
+Zoopago.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Zoopagomycota[[1]],"node"]
+Kickxello.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Kickxellomycota[[1]],"node"]
+
+# create and label the tree
+labeltree <- groupOTU(tree, phy.asvs)
+phylum.levels <- c("Ascomycota",
+                   "Basidiomycota",
+                   "Glomeromycota",
+                   "Chytridiomycota",
+                   "Basidiobolomycota",
+                   "Blastocladiomycota",
+                   "Mortierellomycota",
+                   "Entorrhizomycota",
+                   "Zoopagomycota",
+                   "Rozellomycota",
+                   "Kickxellomycota",
+                   "Mucoromycota",
+                   "Other")
+
+
+phylum.colors <- c("#1d3554","#42858C","#570D32","#dd9933", rep("#000000", 9))
+phylum.colors
+names(phylum.colors) <- phylum.levels
+
+phy.asvs
+p <- ggtree(labeltree, aes(color=group), size = 0.2) +
+  scale_color_manual(values = phylum.colors)
+p
+#geom_nodepoint(color="black", size=0.1) 
+p
+p1 <- p + geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Ascomycota","node"], 
+                    label="Ascomycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"], 
+                    label="Basidiomycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], 
+                    label="Glomeromycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], 
+                    label="Chytridiomycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], 
+                    label="Rozellomycota", offset = 150,
+                    align = T) +
+    geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"], 
+                    label="Mortierellomycota", offset = 150,
+                    align = T)
+  # geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Blastocladiomycota","node"], 
+  #                   label="Blastocladio", 
+  #                   align = T) +
+  # geom_cladelabel(node = Mucoro.node, 
+  #                   label="Mucoro", 
+  #                   align = T) +
+  # geom_cladelabel(node = Basidiobolo.node, 
+  #                   label="Basidiobolo", 
+  #                   align = T) +
+  # geom_cladelabel(node = Entorrhizo.node, 
+  #                   label="Entorrhizo", 
+  #                   align = T) +
+  # geom_cladelabel(node = Zoopago.node, 
+  #                   label="Zoopago", 
+  #                   align = T) +
+  # geom_cladelabel(node = Kickxello.node, 
+  #                   label="Kickxello", 
+  #                   align = T) 
+p1 %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Ascomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Mucoromycota","node"], scale = .01) + xlim_tree(1000) -> p1.tmp 
+p1.tmp
+
+# flip around the phyla so they are in a order that matches 
+# topology in Tedersoo et al 2018
+# order in the tree:
+#asco (x)
+#basidio (x) 
+#entorrhizo
+#glomero
+#mortierello
+#mucoro
+#kickxello
+#zoopago
+#basidiobolo
+#chytridio
+#blastocladio
+#rozello
+p1 %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) +
+  xlim_tree(1000) -> p2
+p2
+p.leg <- p2 + theme(legend.position="right")
+legend <- cowplot::get_legend(p.leg)
+
+# do this for the plot w/o labels
+p %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) +
+  xlim_tree(1000) -> p2.nolab
+p2.nolab
+
+# extract class info with this function
+extract.mrca.class <- function(tree.dat, class.tab, tree){
+  mrca.list <- list()
+  i<-1
+  for(i in 1:dim(class.tab)[1]){
+    tree.dat %>%
+      filter(isTip == TRUE) %>%
+      filter(class == class.tab$class[i]) -> tmp
+    mrca.list[[i]]<- MRCA(tree, as.character(tmp$ASV))
+  }
+  class.tab$node <- unlist(mrca.list)
+  return(class.tab)
+}
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Ascomycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> asco.classes
+asco.classes <- extract.mrca.class(tree.dat, class.tab = asco.classes, tree)
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Basidiomycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> basidio.classes
+basidio.classes <- extract.mrca.class(tree.dat, class.tab = basidio.classes, tree)
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Glomeromycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> glomero.classes
+glomero.classes <- extract.mrca.class(tree.dat, class.tab = glomero.classes, tree)
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Chytridiomycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> chytrid.classes
+
+# highlight key classes in ascos and basidios
+asco.classes
+d <- asco.classes[asco.classes$class == "c__Dothideomycetes","node"][[1]]
+e <- asco.classes[asco.classes$class == "c__Eurotiomycetes","node"][[1]]
+s <- asco.classes[asco.classes$class == "c__Sordariomycetes","node"][[1]]
+p <- asco.classes[asco.classes$class == "c__Pezizomycetes","node"][[1]]
+
+basidio.classes
+a <- basidio.classes[basidio.classes$class == "c__Agaricomycetes","node"][[1]]
+t <- basidio.classes[basidio.classes$class == "c__Tremellomycetes","node"][[1]]
+pu <- basidio.classes[basidio.classes$class == "c__Pucciniomycetes","node"][[1]]
+
+glomero.classes
+g <- glomero.classes[glomero.classes$class == "c__Glomeromycetes","node"][[1]]
+pg <- glomero.classes[glomero.classes$class == "c__Paraglomeromycetes","node"][[1]]
+ar <- glomero.classes[glomero.classes$class == "c__Archaeosporomycetes","node"][[1]]
+
+
+
+
+p2 +
+  # ascos
+  geom_hilight(node=d, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = d, label = "Dothideomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=s, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = s, label = "Sordariomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=e, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = e, label = "Eurotiomycetes", 
+                  color = "gray",  fontsize = 2) +
+  geom_hilight(node=p, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = p, label = "Pezizomycetes", 
+                  color = "gray", fontsize = 2) +
+  # basidios
+  geom_hilight(node=a, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = a, label = "Agaricomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=t, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = t, label = "Tremellomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=pu, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = pu, label = "Pucciniomycetes", 
+                  color = "gray", fontsize = 2) +
+  # glomeros
+  geom_hilight(node=g, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = g, label = "Glomeromycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=pg, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = pg, label = "Paraglomeromycetes", 
+                  color = "gray",fontsize = 2) +
+  geom_hilight(node=ar, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = ar, label = "Archaeosporomycetes", 
+                  color = "gray",  fontsize = 2) -> p3
+
+```
+
+Make the tile plot and combine it with the tree
+```{r}
+#asv.abund
+#asv.pres
+
+# make tileplot -- abund
+p2$data %>%
+  filter(isTip == TRUE) %>%
+  mutate(ASV = label) %>%
+  dplyr::select(y, ASV) %>%
+  unique() %>%
+  arrange(y) %>%
+  left_join(asv.abund) %>%
+  select(-c(ASV)) %>%
+  gather(key = "term", value = "sign", -c(y)) -> plot.df.abund
+unique(plot.df.abund$term)
+ord.terms <- c("Leaf__K", "Leaf__P", "Leaf__max.height.m", "Leaf__ph",
+               "Root__Mn", "Root__ph", "Root__perc.clay", "Root__max.height.m",
+               "Soil__stand.age.yrs.num", "Soil__doc", "Soil__TIN",
+               "Soil__perc.clay", "Soil__Cu")  
+unique(plot.df.abund$term)[!unique(plot.df.abund$term) %in% ord.terms]
+
+plot.df.abund$term <- factor(plot.df.abund$term, levels = ord.terms)
+p1.abund <- ggplot(plot.df.abund, aes(x=term, y=y, fill = sign)) + 
+  geom_tile() +
+  scale_fill_manual(values = c("positive"="#E59E25", #light orange
+                               "negative"="#5BB5E7", #light blue
+                               "ns"="#F0F0F0"), na.value=NA) +
+  theme_tree2() +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(position = "top", expand = c(0,0)) 
+p1.abund
+p1.abund <- p1.abund + ylim2(p3)
+
+##E59E25 light orange
+##5BB5E7 light blue
+#positive"="#D35E1A", #dark orange
+#"negative"="#1074B0", # dark blue
+
+# make tileplot -- presence
+p2$data %>%
+  filter(isTip == TRUE) %>%
+  mutate(ASV = label) %>%
+  dplyr::select(y, ASV) %>%
+  unique() %>%
+  arrange(y) %>%
+  left_join(asv.pres) %>%
+  select(-c(ASV)) %>%
+  gather(key = "term", value = "sign", -c(y)) -> plot.df.p
+unique(plot.df.p$term)
+unique(plot.df.p$term)[!unique(plot.df.p$term) %in% ord.terms]
+
+plot.df.p$term <- factor(plot.df.p$term, levels = ord.terms)
+p1.p <- ggplot(plot.df.p, aes(x=term, y=y, fill = sign)) + 
+  geom_tile() +
+  scale_fill_manual(values = c("positive"="#E59E25", #light orange
+                               "negative"="#5BB5E7", #light blue
+                               "ns"="#F0F0F0"), na.value=NA) +
+  theme_tree2() +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(position = "top", expand = c(0,0)) 
+p1.p
+p1.p <- p1.p + ylim2(p3)
+
+#theme(axis.text.x = element_text(angle = 90))
+#+ xlim_tree(50)
+
+# abund
+big.plot <- plot_grid(p2.nolab + 
+  scale_x_continuous(limits = c(0,600)), 
+          p1.abund + guides(fill = F), 
+          align='h', rel_widths = c(2.5,1), nrow = 1)
+big.plot
+ggsave(big.plot, filename = file.path(out_path, "phyloAll_abund.png"),
+       width = 10, height = 10)
+
+
+# presence
+big.plot <- plot_grid(p2.nolab + 
+  scale_x_continuous(limits = c(0,600)), 
+          p1.p + guides(fill = F), 
+          align='h', rel_widths = c(2.5,1), nrow = 1)
+big.plot
+ggsave(big.plot, filename = file.path(out_path, "phyloAll_pres.png"),
+       width = 10, height = 10)
+
+
+ggsave(p3, filename = file.path(out_path,"phyloAll_annotated.png"),
+       width = 10, height = 10)
+```
+
+_______________________________
+# E. Followups 
+
+## 1. Varpart -- Leaf fungi explained by lat lon versus environmental matrix (based on SEM)?
+```{r}
+mat.vars <- read.csv(file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"), row.names = 1)
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+colnames(mat.vars)
+
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_leaf.RData")
+dpcoa.dist <- dpcoa$RaoDis
+row.names(dpcoa$tab) == mat.vars$sample.name.match
+mod1 <- capscale(dpcoa.dist ~ ph + K + P + max.height.m + MAP.mm + samp.lon + samp.lat, data = mat.vars)
+anova(mod1, by = "terms")
+
+mod2 <- varpart(dpcoa.dist, ~ ph + K + P + max.height.m + MAP.mm, ~ samp.lon + samp.lat, data = mat.vars)
+plot(mod2)
+
+```
+
+## 2. Enough variance explained by VST PCoA1 to do SEM?
+```{r}
+
+library("DESeq2")
+
+# leaf
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+## calculate vst
+ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+#plotDispEsts(ps_ds) # plot the dispersion estimates
+vst <- getVarianceStabilizedData(ps_ds)
+vst <- t(vst) # need to make the rows samples
+## do ordination with Euclidean distances
+mod <- prcomp(vst)
+summary(mod)$importance[,1:2] # PC1 explains 9.4%
+
+
+# root
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+## calculate vst
+ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+#plotDispEsts(ps_ds) # plot the dispersion estimates
+vst <- getVarianceStabilizedData(ps_ds)
+vst <- t(vst) # need to make the rows samples
+## do ordination with Euclidean distances
+mod <- prcomp(vst)
+summary(mod)$importance[,1:2] # PC1 explains 5.2%
+
+# soil
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+## calculate vst
+ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+#plotDispEsts(ps_ds) # plot the dispersion estimates
+vst <- getVarianceStabilizedData(ps_ds)
+vst <- t(vst) # need to make the rows samples
+## do ordination with Euclidean distances
+mod <- prcomp(vst)
+summary(mod)$importance[,1:2] # PC1 explains 6.0%
+
+
+```
+
+
+
+
+
+
+
