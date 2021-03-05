@@ -31,7 +31,7 @@ Q1. Given within-plant habitat, do fungal communities diverge/converge based on 
 ________________________________
 
 Load packages, functions, paths
-```{r setup, include=FALSE, cache = T}
+```{r setup}
 knitr::opts_chunk$set(echo = T)
 
 # paths
@@ -282,7 +282,7 @@ sam$Site <- factor(sam$Site)
 library(RRPP)
 
 ### VST
-fit.vst <- lm.rrpp(vst ~ Site + Tissue + Site:Tissue, data = sam, SS.type = "III", iter = 999)
+fit.vst <- lm.rrpp(vst ~ Site + Tissue + Site:Tissue, data = sam, SS.type = "III", iter = 99)
 fit.vst$LM$term.labels  #check order of model terms
 anova.fit.vst <- anova(fit.vst, effect.type = "F", 
                        error = c("Site:Tissue","Site:Tissue","Residuals"))
@@ -295,7 +295,7 @@ rdf <- rrpp.data.frame(d = raodis,
                        Site = factor(sam$Site),
                        Samp = factor(sam$Samp),
                        Tissue = factor(sam$Tissue))
-fit.rao <- lm.rrpp(d ~ Site + Tissue + Site:Tissue, data = rdf, SS.type = "III", iter = 999)
+fit.rao <- lm.rrpp(d ~ Site + Tissue + Site:Tissue, data = rdf, SS.type = "III", iter = 99)
 fit.rao$LM$term.labels  #check order of model terms
 anova.fit.rao <- anova(fit.rao, effect.type = "F", 
                        error = c("Site:Tissue","Site:Tissue","Residuals"))
@@ -349,7 +349,7 @@ rdf.curr <- rrpp.data.frame(d = raodis.curr,
 
 ### VST
 fit.vst <- lm.rrpp(curr.vst ~ Site, data = curr.sam,
-               SS.type = "III", iter = 999, print.progress = T)
+               SS.type = "III", iter = 99, print.progress = T)
 fit.vst$LM$term.labels  #check order of model terms
 anova.fit.vst <- anova(fit.vst, effect.type = "F", error = c("Residuals"))
 summary(anova.fit.vst, formula = false)
@@ -357,7 +357,7 @@ capture.output(summary(anova.fit.vst, formula = false), file = file.path(out_pat
 
 ### Rao
 fit.rao <- lm.rrpp(d ~ Site, data = rdf.curr,
-               SS.type = "III", iter = 999, print.progress = T)
+               SS.type = "III", iter = 99, print.progress = T)
 fit.rao$LM$term.labels  #check order of model terms
 anova.fit.rao <- anova(fit.rao, effect.type = "F", error = c("Residuals"))
 summary(anova.fit.rao, formula = false)
@@ -410,7 +410,7 @@ rdf.curr <- rrpp.data.frame(d = raodis.curr,
 
 ### VST
 fit.vst <- lm.rrpp(curr.vst ~ Site, data = curr.sam,
-               SS.type = "III", iter = 999, print.progress = T)
+               SS.type = "III", iter = 99, print.progress = T)
 fit.vst$LM$term.labels  #check order of model terms
 anova.fit.vst <- anova(fit.vst, effect.type = "F", error = c("Residuals"))
 summary(anova.fit.vst, formula = false)
@@ -418,7 +418,7 @@ capture.output(summary(anova.fit.vst, formula = false), file = file.path(out_pat
 
 ### Rao
 fit.rao <- lm.rrpp(d ~ Site, data = rdf.curr,
-               SS.type = "III", iter = 999, print.progress = T)
+               SS.type = "III", iter = 99, print.progress = T)
 fit.rao$LM$term.labels  #check order of model terms
 anova.fit.rao <- anova(fit.rao, effect.type = "F", error = c("Residuals"))
 summary(anova.fit.rao, formula = false)
@@ -471,7 +471,7 @@ rdf.curr <- rrpp.data.frame(d = raodis.curr,
 
 ### VST
 fit.vst <- lm.rrpp(curr.vst ~ Site, data = curr.sam,
-               SS.type = "III", iter = 999, print.progress = T)
+               SS.type = "III", iter = 99, print.progress = T)
 fit.vst$LM$term.labels  #check order of model terms
 anova.fit.vst <- anova(fit.vst, effect.type = "F", error = c("Residuals"))
 summary(anova.fit.vst, formula = false)
@@ -479,7 +479,7 @@ capture.output(summary(anova.fit.vst, formula = false), file = file.path(out_pat
 
 ### Rao
 fit.rao <- lm.rrpp(d ~ Site, data = rdf.curr,
-               SS.type = "III", iter = 999, print.progress = T)
+               SS.type = "III", iter = 99, print.progress = T)
 fit.rao$LM$term.labels  #check order of model terms
 anova.fit.rao <- anova(fit.rao, effect.type = "F", error = c("Residuals"))
 summary(anova.fit.rao, formula = false)
@@ -663,6 +663,10 @@ asv.mat <- as.matrix(asv.df)
 
 library(picante)
 
+library(lme4)
+library(lmerTest)
+library(emmeans)
+
 # calculate Faith's PD
 df.pd <- pd(asv.mat, phy_tree(ps), include.root = F) 
 df.pd$sample.name.match <- row.names(df.pd)
@@ -742,9 +746,7 @@ tuk.sr <- emmeans(mod.sr, list(pairwise ~ Tissue * cultivar), adjust = "tukey")
 tuk.sr
 
 
-library(lme4)
-library(lmerTest)
-library(emmeans)
+
 mod.sr <- lmer(SR ~ Tissue + (1|Site), data = alpha)
 sum(resid(mod.sr)^2)
 an.sr <- anova(mod.sr)
@@ -854,6 +856,7 @@ names(sameSite.colors) <- c(FALSE, TRUE)
 
 #load the data
 require(phyloseq)
+
 ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
 ps
 vst <- readRDS(file = file.path("output/illumina/Q0", "vst_all.RData"))
@@ -947,7 +950,7 @@ dist.df %>%
 Fit segmented regression models -- Bray
 ```{r}
 #library("segmented")
-str(dist.df)
+#str(dist.df)
 dist.df$Tissue <- factor(dist.df$Tissue_samp1)
 dist.df$bray.sim <- 1- dist.df$bray.comm.dist
 
@@ -1009,7 +1012,7 @@ summary(moda)
 capture.output(summary(moda), 
                file = file.path(out_path,"segBray.txt"), append = T)
 
-library(lsmeans)
+library(emmeans)
 moda.lst <- lstrends(moda, ~ Tissue, var = "hav.dist.km")
 pairs(moda.lst)   # comparisons of slopes
 TukeyHSD(aov(moda), which = "Tissue") # comparison of intercepts
@@ -1064,7 +1067,7 @@ y.l <- coef(mod.seg)['TissueL'] + hav.l *coef(mod.seg)['hav.L']
 y.r <- coef(mod.seg)['TissueR'] + hav.r * coef(mod.seg)['hav.R'] 
 y.s <- coef(mod.seg)['TissueS'] + hav.s * coef(mod.seg)['hav.S'] 
 brks$y <- c(y.l, y.r, y.s)
-colnames(brks)
+#colnames(brks)
 brks
 p +
   xlim(c(0,.7)) +
@@ -1103,7 +1106,7 @@ library(gridExtra)
 Fit segmented regression models -- Phylosor
 ```{r}
 #library("segmented")
-str(dist.df)
+#str(dist.df)
 dist.df$Tissue <- factor(dist.df$Tissue_samp1)
 
 # build the dummy variables for the Tissue x distance interaction
@@ -1114,7 +1117,7 @@ min(which(dist.df$Tissue == "R"))
 hav.L <- X[,1]
 hav.R <- X[,2]
 hav.S <- X[,3]
-colnames(dist.df)
+#colnames(dist.df)
 mod <- lm(physor.comm.dist ~ 0 + Tissue + hav.L + hav.R + hav.S, 
           data = dist.df)
 mod
@@ -1168,7 +1171,7 @@ capture.output(summary(moda),
                file = file.path(out_path,"segPhysor.txt"), append = T)
 
 pred.a <- predict(moda)
-pred.a
+#pred.a
 moda.lst <- lstrends(moda, ~ Tissue, var = "hav.dist.km")
 moda.lst
 pairs(moda.lst)   # comparisons of slopes
@@ -1210,10 +1213,10 @@ p <- ggplot(dist.df, aes(x = hav.dist.km, y = pred,
   xlab("Spatial distance (km)") +
   scale_color_manual(values = tissue.colors) +
   scale_fill_manual(values = tissue.colors)
-#p
+p
 
-p + xlim(c(0,.7)) +
-  geom_line(aes(y = pred.before, x = hav.dist.km, color = Tissue), inherit.aes = F)
+# p + xlim(c(0,.7)) +
+#   geom_line(aes(y = pred.before, x = hav.dist.km, color = Tissue), inherit.aes = F)
   
 
 # add error around breaks
@@ -1231,7 +1234,7 @@ y.l <- coef(mod.seg)['TissueL'] + hav.l *coef(mod.seg)['hav.L']
 y.r <- coef(mod.seg)['TissueR'] + hav.r * coef(mod.seg)['hav.R'] 
 y.s <- coef(mod.seg)['TissueS'] + hav.s * coef(mod.seg)['hav.S'] 
 brks$y <- c(y.l, y.r, y.s)
-colnames(brks)
+#colnames(brks)
 brks
 p +
   xlim(c(0,.7)) +

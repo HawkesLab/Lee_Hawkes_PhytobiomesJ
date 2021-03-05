@@ -1,19 +1,19 @@
 
 Analysis of Variance, using Residual Randomization
 Permutation procedure: Randomization of null model residuals 
-Number of permutations: 1000 
+Number of permutations: 100 
 Estimation method: Ordinary Least Squares 
 Sums of Squares and Cross-products: Type III 
 Effect sizes (Z) based on F distributions
 
-             Df      SS    MS     Rsq      F       Z Pr(>F)   
-Site         13  232943 17919 0.08968 1.0483  4.0375  0.001 **
-Tissue        2   63864 31932 0.02459 1.8681  6.4687  0.001 **
-Site:Tissue  26  444415 17093 0.17110 3.5314 28.0430  0.001 **
-Residuals   290 1403688  4840 0.54042                         
-Total       331 2597399                                       
+             Df      SS    MS     Rsq      F      Z Pr(>F)  
+Site         13  232943 17919 0.08968 1.0483 3.5786   0.01 *
+Tissue        2   63864 31932 0.02459 1.8681 5.9825   0.01 *
+Site:Tissue  26  444415 17093 0.17110 3.5314 9.7073   0.01 *
+Residuals   290 1403688  4840 0.54042                       
+Total       331 2597399                                     
 ---
 Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
 
-Call: lm.rrpp(f1 = vst ~ Site + Tissue + Site:Tissue, iter = 999, SS.type = "III",  
+Call: lm.rrpp(f1 = vst ~ Site + Tissue + Site:Tissue, iter = 99, SS.type = "III",  
     data = sam)

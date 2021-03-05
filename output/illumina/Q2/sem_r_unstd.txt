@@ -1,0 +1,56 @@
+lavaan 0.6-6 ended normally after 64 iterations
+
+  Estimator                                         ML
+  Optimization method                           NLMINB
+  Number of free parameters                         14
+                                                      
+  Number of observations                           111
+                                                      
+Model Test User Model:
+                                                      
+  Test statistic                                 3.394
+  Degrees of freedom                                 4
+  P-value (Chi-square)                           0.494
+
+Parameter Estimates:
+
+  Standard errors                             Standard
+  Information                                 Expected
+  Information saturated (h1) model          Structured
+
+Regressions:
+                   Estimate  Std.Err  z-value  P(>|z|)
+  Axis1 ~                                             
+    ph                6.060    2.367    2.561    0.010
+    Mn               -5.744    2.010   -2.858    0.004
+    perc.clay         5.568    1.724    3.231    0.001
+    max.height.m     -5.554    2.516   -2.207    0.027
+  ph ~                                                
+    perc.sand         0.384    0.129    2.983    0.003
+  Mn ~                                                
+    perc.sand        -0.071    0.106   -0.673    0.501
+  ph ~                                                
+    perc.clay         0.363    0.112    3.256    0.001
+  max.height.m ~                                      
+    ph                0.459    0.078    5.920    0.000
+    Mn               -0.314    0.070   -4.512    0.000
+
+Covariances:
+                   Estimate  Std.Err  z-value  P(>|z|)
+ .ph ~~                                               
+   .Mn                0.025    0.006    4.271    0.000
+
+Variances:
+                   Estimate  Std.Err  z-value  P(>|z|)
+   .Axis1            20.037    2.690    7.450    0.000
+   .ph                0.048    0.006    7.450    0.000
+   .Mn                0.064    0.009    7.450    0.000
+   .max.height.m      0.029    0.004    7.450    0.000
+
+R-Square:
+                   Estimate
+    Axis1             0.163
+    ph                0.079
+    Mn                0.004
+    max.height.m      0.265
+

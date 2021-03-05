@@ -1,0 +1,87 @@
+lavaan 0.6-6 ended normally after 64 iterations
+
+  Estimator                                         ML
+  Optimization method                           NLMINB
+  Number of free parameters                         14
+                                                      
+  Number of observations                           111
+                                                      
+Model Test User Model:
+                                                      
+  Test statistic                                 3.394
+  Degrees of freedom                                 4
+  P-value (Chi-square)                           0.494
+
+Model Test Baseline Model:
+
+  Test statistic                                92.418
+  Degrees of freedom                                14
+  P-value                                        0.000
+
+User Model versus Baseline Model:
+
+  Comparative Fit Index (CFI)                    1.000
+  Tucker-Lewis Index (TLI)                       1.027
+
+Loglikelihood and Information Criteria:
+
+  Loglikelihood user model (H0)               -265.359
+  Loglikelihood unrestricted model (H1)       -263.662
+                                                      
+  Akaike (AIC)                                 558.717
+  Bayesian (BIC)                               596.651
+  Sample-size adjusted Bayesian (BIC)          552.408
+
+Root Mean Square Error of Approximation:
+
+  RMSEA                                          0.000
+  90 Percent confidence interval - lower         0.000
+  90 Percent confidence interval - upper         0.133
+  P-value RMSEA <= 0.05                          0.624
+
+Standardized Root Mean Square Residual:
+
+  SRMR                                           0.036
+
+Parameter Estimates:
+
+  Standard errors                             Standard
+  Information                                 Expected
+  Information saturated (h1) model          Structured
+
+Regressions:
+                   Estimate  Std.Err  z-value  P(>|z|)   Std.lv  Std.all
+  Axis1 ~                                                               
+    ph                6.060    2.367    2.561    0.010    6.060    0.282
+    Mn               -5.744    2.010   -2.858    0.004   -5.744   -0.297
+    perc.clay         5.568    1.724    3.231    0.001    5.568    0.282
+    max.height.m     -5.554    2.516   -2.207    0.027   -5.554   -0.224
+  ph ~                                                                  
+    perc.sand         0.384    0.129    2.983    0.003    0.384    0.382
+  Mn ~                                                                  
+    perc.sand        -0.071    0.106   -0.673    0.501   -0.071   -0.064
+  ph ~                                                                  
+    perc.clay         0.363    0.112    3.256    0.001    0.363    0.396
+  max.height.m ~                                                        
+    ph                0.459    0.078    5.920    0.000    0.459    0.530
+    Mn               -0.314    0.070   -4.512    0.000   -0.314   -0.404
+
+Covariances:
+                   Estimate  Std.Err  z-value  P(>|z|)   Std.lv  Std.all
+ .ph ~~                                                                 
+   .Mn                0.025    0.006    4.271    0.000    0.025    0.443
+
+Variances:
+                   Estimate  Std.Err  z-value  P(>|z|)   Std.lv  Std.all
+   .Axis1            20.037    2.690    7.450    0.000   20.037    0.837
+   .ph                0.048    0.006    7.450    0.000    0.048    0.921
+   .Mn                0.064    0.009    7.450    0.000    0.064    0.996
+   .max.height.m      0.029    0.004    7.450    0.000    0.029    0.735
+
+R-Square:
+                   Estimate
+    Axis1             0.163
+    ph                0.079
+    Mn                0.004
+    max.height.m      0.265
+

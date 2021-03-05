@@ -1,0 +1,92 @@
+lavaan 0.6-6 ended normally after 76 iterations
+
+  Estimator                                         ML
+  Optimization method                           NLMINB
+  Number of free parameters                         17
+                                                      
+  Number of observations                           109
+                                                      
+Model Test User Model:
+                                                      
+  Test statistic                                 2.452
+  Degrees of freedom                                 3
+  P-value (Chi-square)                           0.484
+
+Model Test Baseline Model:
+
+  Test statistic                               159.803
+  Degrees of freedom                                15
+  P-value                                        0.000
+
+User Model versus Baseline Model:
+
+  Comparative Fit Index (CFI)                    1.000
+  Tucker-Lewis Index (TLI)                       1.019
+
+Loglikelihood and Information Criteria:
+
+  Loglikelihood user model (H0)               -213.706
+  Loglikelihood unrestricted model (H1)       -212.480
+                                                      
+  Akaike (AIC)                                 461.412
+  Bayesian (BIC)                               507.165
+  Sample-size adjusted Bayesian (BIC)          453.447
+
+Root Mean Square Error of Approximation:
+
+  RMSEA                                          0.000
+  90 Percent confidence interval - lower         0.000
+  90 Percent confidence interval - upper         0.150
+  P-value RMSEA <= 0.05                          0.594
+
+Standardized Root Mean Square Residual:
+
+  SRMR                                           0.027
+
+Parameter Estimates:
+
+  Standard errors                             Standard
+  Information                                 Expected
+  Information saturated (h1) model          Structured
+
+Regressions:
+                   Estimate  Std.Err  z-value  P(>|z|)   Std.lv  Std.all
+  Axis1 ~                                                               
+    ph                4.693    1.951    2.405    0.016    4.693    0.232
+    P                -5.124    1.455   -3.523    0.000   -5.124   -0.286
+    K                 6.755    1.828    3.695    0.000    6.755    0.334
+    max.height.m     -5.501    2.063   -2.666    0.008   -5.501   -0.233
+  ph ~                                                                  
+    perc.sand         0.081    0.096    0.844    0.399    0.081    0.081
+  P ~                                                                   
+    perc.sand         0.522    0.096    5.432    0.000    0.522    0.462
+  K ~                                                                   
+    perc.sand        -0.417    0.087   -4.784    0.000   -0.417   -0.417
+  max.height.m ~                                                        
+    ph                0.300    0.075    4.001    0.000    0.300    0.350
+    P                -0.146    0.075   -1.958    0.050   -0.146   -0.192
+    perc.sand         0.178    0.085    2.107    0.035    0.178    0.207
+
+Covariances:
+                   Estimate  Std.Err  z-value  P(>|z|)   Std.lv  Std.all
+ .ph ~~                                                                 
+   .K                 0.024    0.005    5.011    0.000    0.024    0.516
+ .P ~~                                                                  
+   .K                 0.016    0.004    3.782    0.000    0.016    0.333
+
+Variances:
+                   Estimate  Std.Err  z-value  P(>|z|)   Std.lv  Std.all
+   .Axis1            15.089    2.044    7.382    0.000   15.089    0.709
+   .ph                0.052    0.007    7.382    0.000    0.052    0.994
+   .P                 0.052    0.007    7.382    0.000    0.052    0.787
+   .K                 0.043    0.006    7.610    0.000    0.043    0.826
+   .max.height.m      0.032    0.004    7.382    0.000    0.032    0.828
+
+R-Square:
+                   Estimate
+    Axis1             0.291
+    ph                0.006
+    P                 0.213
+    K                 0.174
+    max.height.m      0.172
+

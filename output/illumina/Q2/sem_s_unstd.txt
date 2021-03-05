@@ -1,0 +1,53 @@
+lavaan 0.6-6 ended normally after 65 iterations
+
+  Estimator                                         ML
+  Optimization method                           NLMINB
+  Number of free parameters                         14
+                                                      
+  Number of observations                           112
+                                                      
+Model Test User Model:
+                                                      
+  Test statistic                                 6.715
+  Degrees of freedom                                 4
+  P-value (Chi-square)                           0.152
+
+Parameter Estimates:
+
+  Standard errors                             Standard
+  Information                                 Expected
+  Information saturated (h1) model          Structured
+
+Regressions:
+                   Estimate  Std.Err  z-value  P(>|z|)
+  Axis1 ~                                             
+    Cu                3.379    1.183    2.856    0.004
+    TIN               5.411    1.572    3.442    0.001
+    doc              -4.264    1.140   -3.740    0.000
+    perc.clay         3.904    1.271    3.072    0.002
+    stand.g.yrs.nm   -6.153    1.293   -4.760    0.000
+  Cu ~                                                
+    perc.clay         0.160    0.092    1.744    0.081
+  TIN ~                                               
+    perc.clay        -0.150    0.069   -2.170    0.030
+  doc ~                                               
+    perc.clay         0.399    0.093    4.291    0.000
+  Cu ~                                                
+    stand.g.yrs.nm    0.309    0.090    3.437    0.001
+  TIN ~                                               
+    stand.g.yrs.nm    0.331    0.068    4.886    0.000
+
+Variances:
+                   Estimate  Std.Err  z-value  P(>|z|)
+   .Axis1             8.779    1.173    7.483    0.000
+   .Cu                0.056    0.007    7.483    0.000
+   .TIN               0.032    0.004    7.483    0.000
+   .doc               0.060    0.008    7.483    0.000
+
+R-Square:
+                   Estimate
+    Axis1             0.281
+    Cu                0.140
+    TIN               0.184
+    doc               0.141
+

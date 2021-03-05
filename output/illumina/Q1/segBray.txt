@@ -1,0 +1,195 @@
+
+	***Regression Model with Segmented Relationship(s)***
+
+Call: 
+segmented.lm(obj = mod, seg.Z = ~hav.L + hav.R + hav.S, psi = list(hav.L = 1, 
+    hav.R = 1, hav.S = 1))
+
+Estimated Break-Point(s):
+             Est. St.Err
+psi1.hav.L 0.251  0.014
+psi1.hav.R 0.363  0.033
+psi1.hav.S 0.291  0.025
+
+Meaningful coefficients of the linear terms:
+          Estimate Std. Error t value Pr(>|t|)    
+TissueL   0.483971   0.006822  70.941   <2e-16 ***
+TissueR   0.192803   0.005945  32.432   <2e-16 ***
+TissueS   0.249726   0.006588  37.905   <2e-16 ***
+hav.L    -1.124714   0.076520 -14.698   <2e-16 ***
+hav.R    -0.356767   0.040319  -8.849   <2e-16 ***
+hav.S    -0.672543   0.071527  -9.403   <2e-16 ***
+U1.hav.L  1.124683   0.076520  14.698       NA    
+U1.hav.R  0.356666   0.040319   8.846       NA    
+U1.hav.S  0.672525   0.071527   9.402       NA    
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Residual standard error: 0.09744 on 18195 degrees of freedom
+Multiple R-Squared: 0.6665,  Adjusted R-squared: 0.6662 
+
+Convergence attained in 2 iter. (rel. change 5.151e-06)
+
+	Davies' test for a change in the slope
+
+data:  formula = bray.sim ~ 0 + Tissue + hav.L + hav.R + hav.S ,   method = lm 
+model = gaussian , link = identity  
+segmented variable = hav.L
+'best' at = 0.25061, n.points = 1, p-value < 2.2e-16
+alternative hypothesis: two.sided
+
+
+	Davies' test for a change in the slope
+
+data:  formula = bray.sim ~ 0 + Tissue + hav.L + hav.R + hav.S ,   method = lm 
+model = gaussian , link = identity  
+segmented variable = hav.R
+'best' at = 0.36265, n.points = 1, p-value < 2.2e-16
+alternative hypothesis: two.sided
+
+
+	Davies' test for a change in the slope
+
+data:  formula = bray.sim ~ 0 + Tissue + hav.L + hav.R + hav.S ,   method = lm 
+model = gaussian , link = identity  
+segmented variable = hav.S
+'best' at = 0.29076, n.points = 1, p-value < 2.2e-16
+alternative hypothesis: two.sided
+
+               Est. CI.95...low CI.95...up Tissue
+psi1.hav.L 0.250608    0.224059   0.277158      L
+psi1.hav.R 0.362648    0.298786   0.426510      R
+psi1.hav.S 0.290763    0.241495   0.340031      S
+                Est.    St.Err.  t.value   CI.95...l   CI.95...u source
+slope1   -1.1247e+00 7.6520e-02 -14.6980 -1.2747e+00 -9.7473e-01  hav.L
+slope2   -3.0990e-05 1.1239e-05  -2.7573 -5.3020e-05 -8.9604e-06  hav.L
+slope1.1 -3.5677e-01 4.0319e-02  -8.8486 -4.3580e-01 -2.7774e-01  hav.R
+slope2.1 -1.0060e-04 1.1209e-05  -8.9749 -1.2257e-04 -7.8630e-05  hav.R
+slope1.2 -6.7254e-01 7.1527e-02  -9.4026 -8.1274e-01 -5.3234e-01  hav.S
+slope2.2 -1.8286e-05 1.0963e-05  -1.6680 -3.9775e-05  3.2026e-06  hav.S
+
+Call:
+lm(formula = bray.sim ~ Tissue * hav.dist.km, data = dist.dfa)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.34402 -0.10390 -0.02235  0.08073  0.69851 
+
+Coefficients:
+                    Estimate Std. Error t value Pr(>|t|)    
+(Intercept)          0.48206    0.01009  47.798  < 2e-16 ***
+TissueR             -0.28101    0.01415 -19.854  < 2e-16 ***
+TissueS             -0.23233    0.01412 -16.449  < 2e-16 ***
+hav.dist.km         -1.08249    0.10802 -10.021  < 2e-16 ***
+TissueR:hav.dist.km  0.55505    0.15242   3.642 0.000282 ***
+TissueS:hav.dist.km  0.40995    0.15230   2.692 0.007199 ** 
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Residual standard error: 0.1463 on 1305 degrees of freedom
+Multiple R-squared:  0.3956,	Adjusted R-squared:  0.3933 
+F-statistic: 170.9 on 5 and 1305 DF,  p-value: < 2.2e-16
+
+
+Call:
+lm(formula = bray.sim ~ Tissue * hav.dist.km, data = dist.dfa)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.34402 -0.10390 -0.02235  0.08073  0.69851 
+
+Coefficients:
+                    Estimate Std. Error t value Pr(>|t|)    
+(Intercept)          0.48206    0.01009  47.798  < 2e-16 ***
+TissueR             -0.28101    0.01415 -19.854  < 2e-16 ***
+TissueS             -0.23233    0.01412 -16.449  < 2e-16 ***
+hav.dist.km         -1.08249    0.10802 -10.021  < 2e-16 ***
+TissueR:hav.dist.km  0.55505    0.15242   3.642 0.000282 ***
+TissueS:hav.dist.km  0.40995    0.15230   2.692 0.007199 ** 
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Residual standard error: 0.1463 on 1305 degrees of freedom
+Multiple R-squared:  0.3956,	Adjusted R-squared:  0.3933 
+F-statistic: 170.9 on 5 and 1305 DF,  p-value: < 2.2e-16
+
+ contrast estimate    SE   df t.ratio p.value
+ L - R      -0.555 0.152 1305 -3.642  0.0008 
+ L - S      -0.410 0.152 1305 -2.692  0.0197 
+ R - S       0.145 0.152 1305  0.955  0.6056 
+
+P value adjustment: tukey method for comparing a family of 3 estimates 
+  Tukey multiple comparisons of means
+    95% family-wise confidence level
+
+Fit: aov(formula = moda)
+
+$Tissue
+           diff         lwr         upr    p adj
+R-L -0.24373963 -0.26707792 -0.22040135 0.000000
+S-L -0.20463267 -0.22788058 -0.18138475 0.000000
+S-R  0.03910697  0.01603578  0.06217815 0.000217
+
+
+Call:
+lm(formula = bray.sim ~ Tissue * hav.dist.km, data = dist.dfb)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.19953 -0.04479 -0.02117  0.02671  0.75036 
+
+Coefficients:
+                      Estimate Std. Error t value Pr(>|t|)    
+(Intercept)          2.020e-01  2.263e-03  89.233  < 2e-16 ***
+TissueR             -1.371e-01  3.181e-03 -43.094  < 2e-16 ***
+TissueS             -1.478e-01  3.168e-03 -46.641  < 2e-16 ***
+hav.dist.km         -3.037e-05  1.069e-05  -2.840  0.00452 ** 
+TissueR:hav.dist.km -7.586e-05  1.498e-05  -5.063 4.16e-07 ***
+TissueS:hav.dist.km  1.208e-05  1.493e-05   0.809  0.41844    
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Residual standard error: 0.09261 on 16890 degrees of freedom
+Multiple R-squared:  0.3618,	Adjusted R-squared:  0.3616 
+F-statistic:  1915 on 5 and 16890 DF,  p-value: < 2.2e-16
+
+
+Call:
+lm(formula = bray.sim ~ Tissue * hav.dist.km, data = dist.dfb)
+
+Residuals:
+     Min       1Q   Median       3Q      Max 
+-0.19953 -0.04479 -0.02117  0.02671  0.75036 
+
+Coefficients:
+                      Estimate Std. Error t value Pr(>|t|)    
+(Intercept)          2.020e-01  2.263e-03  89.233  < 2e-16 ***
+TissueR             -1.371e-01  3.181e-03 -43.094  < 2e-16 ***
+TissueS             -1.478e-01  3.168e-03 -46.641  < 2e-16 ***
+hav.dist.km         -3.037e-05  1.069e-05  -2.840  0.00452 ** 
+TissueR:hav.dist.km -7.586e-05  1.498e-05  -5.063 4.16e-07 ***
+TissueS:hav.dist.km  1.208e-05  1.493e-05   0.809  0.41844    
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Residual standard error: 0.09261 on 16890 degrees of freedom
+Multiple R-squared:  0.3618,	Adjusted R-squared:  0.3616 
+F-statistic:  1915 on 5 and 16890 DF,  p-value: < 2.2e-16
+
+ contrast  estimate       SE    df t.ratio p.value
+ L - R     7.59e-05 1.50e-05 16890  5.063  <.0001 
+ L - S    -1.21e-05 1.49e-05 16890 -0.809  0.6974 
+ R - S    -8.79e-05 1.48e-05 16890 -5.947  <.0001 
+
+P value adjustment: tukey method for comparing a family of 3 estimates 
+  Tukey multiple comparisons of means
+    95% family-wise confidence level
+
+Fit: aov(formula = modb)
+
+$Tissue
+            diff           lwr          upr    p adj
+R-L -0.150596660 -0.1547131023 -0.146480218 0.000000
+S-L -0.145675203 -0.1497733989 -0.141577006 0.000000
+S-R  0.004921457  0.0008617196  0.008981195 0.012499
+
