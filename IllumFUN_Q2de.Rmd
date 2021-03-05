@@ -1,0 +1,1264 @@
+---
+title: "IllumFUN_Q2de: HMSC and follow-ups"
+author: "Marissa Lee"
+date: "12/16/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Q2. How are differences in fungal composition across the landscape explained by environmental variables?
+
+*Table of contents*
+
+#### 0. Load data and pre-process ASV matrix
+See IllumFUN_Q1.Rmd
+
+#### A. Determine which environmental variables to include in path analysis
+See IllumFUN_Q2a.Rmd
+
+#### B. SEM using DPCoA1 score to represent community
+See IllumFUN_Q2bc.Rmd
+
+#### C. Investigate SEM results with bivariate plots
+See IllumFUN_Q2bc.Rmd
+
+#### D. Investigate SEM results with HMSC
+1. Set up HMSC analyses on the HPC
+2. Examine HMSC output
+3. Prune to high confidence taxa-environment relationships
+4. Make phylogenetic tree/heat map plots
+
+#### E. Follow-ups
+1. Varpart for leaf fungi
+2. Variance explained by VST PCoA1
+
+________________________________
+
+Load packages, functions, paths
+```{r, include = F}
+
+# paths
+merged_path <- "data_intermediates/Illum_analyses/FUN-merged"
+out_path <- "output/illumina/Q2"
+
+# custom functions
+source("code/helpers.R") # misc helpful fxns
+#sourceDir("code") # loads all the custom functions in this folder
+
+# formatting
+require("tidyverse"); packageVersion("tidyverse")
+require("readxl"); packageVersion("readxl") # to read in excel files
+#library("gridExtra"); packageVersion("gridExtra")
+library("phyloseq");  packageVersion("phyloseq")
+library("speedyseq")
+
+# stats
+library("corrplot")
+library("MVN")
+#library("vegan"); packageVersion("vegan") # vif.cca() function
+#library("jtools"); packageVersion("jtools") # used to test environmental differences based on plot type
+#library("car"); packageVersion("car") # has vif tools
+#library(MCMCpack)
+#library(MCMCvis)
+#library(Hmsc)
+
+
+```
+
+Custom functions
+```{r, include=FALSE}
+
+# calc geometric mean of each ASV
+gm_mean = function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+
+update_vst <- function(ps){
+  
+  require(DESeq2)
+  require(phyloseq)
+  
+  ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+  geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+  ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+  ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+  #plotDispEsts(ps_ds) # plot the dispersion estimates
+  vst <- getVarianceStabilizedData(ps_ds)
+  vst <- t(vst) # need to make the rows samples
+  
+  ps.new <- ps
+  otu_table(ps.new) <- otu_table(vst, taxa_are_rows = F)
+  return(ps.new)
+  
+}
+
+
+```
+
+________________________________
+
+
+# D. Investigate SEM results with HMSC
+
+## 1. Set up HMSC analyses on the HPC
+
+Two general types of HMSC models were run for each plant compartment: (a) ASV presence/absence and (b) ASV relative abundance. Each type has its own folder that was uploaded to the HPC with relevant input data, code, and output. Folders are called "hmsc_fits_ab" and "hmsc_fits_pr", respectively, and located at data_intermediates/Illum_analyses. 
+
+The general structure within each folder is as follows:
+1. data folder with a phyloseq object for each plant compartment and taxonomy-based phylogenetic tree
+2. R script for each plant compartment with the name "hmsc_compartment.R"
+3. HPC scheduling script for each plant compartment with the name "runR_hmsc_<compartment>.csh"
+4. output folder: these items are used in the code below
+
+## 2. Examine HMSC output 
+
+The code chunks below are mostly commented out because reading in some of these HMSC output files are very memory intensive and can take a while. 
+
+Examine mixing (commented out)
+```{r, include = F}
+# # Examine fit
+library(MCMCpack)
+library(MCMCvis)
+library(Hmsc)
+
+summ_geldiag <- function(post){
+  
+  #Approximate convergence is diagnosed when the upper limit is close to 1.
+  # These are all close to 1
+  gel <- gelman.diag(post$Beta, multivariate = F)
+  # Error in chol.default(W) : the leading minor of order 2997 is not positive definite # this is probably because there were NAs... set multivariate to false
+  gel.gam<- gelman.diag(post$Gamma, multivariate = F)
+  gel.v <- gelman.diag(post$V, multivariate = F)
+  gel.s <- gelman.diag(post$Sigma, multivariate = F)
+  gel.rho <- gelman.diag(post$Rho, multivariate = F)
+  
+  geldiag.list <- list(Beta = gel$psrf[,1],
+                       Gamma = gel.gam$psrf[,1],
+                       V = gel.v$psrf[,1],
+                       Sigma = gel.s$psrf[,1],
+                       Rho = gel.rho$psrf[,1])
+  
+  return(geldiag.list)
+  
+}
+
+# leaf
+# abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_leaf.RData")
+# post <- convertToCodaObject(m.l)
+# geldiag.list.l <- summ_geldiag(post)
+# saveRDS(geldiag.list.l, file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_leaf.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_leaf.pdf", 
+#     width = 4, height = 4)
+# boxplot(geldiag.list.l, main = "Leaf")
+# dev.off()
+# # presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# post <- convertToCodaObject(m.l)
+# geldiag.list.l <- summ_geldiag(post)
+# saveRDS(geldiag.list.l, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_leaf.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_leaf.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.l, main = "Leaf")
+# dev.off()
+
+
+# root
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_root.RData")
+# post <- convertToCodaObject(m.r)
+# geldiag.list.r <- summ_geldiag(post)
+# saveRDS(geldiag.list.r, file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_root.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/geldiag_root.pdf", 
+#     width = 5, height = 4)
+# boxplot(geldiag.list.r, main = "Root")
+# dev.off()
+# presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# post <- convertToCodaObject(m.r)
+# geldiag.list.r <- summ_geldiag(post)
+# saveRDS(geldiag.list.r, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_root.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_root.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.r, main = "Root")
+# dev.off()
+
+# soil
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# post <- convertToCodaObject(m.s)
+# geldiag.list.s <- summ_geldiag(post)
+# saveRDS(geldiag.list.s, file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/geldiag_soil.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/geldiag_soil.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.s, main = "Soil")
+# dev.off()
+# presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# post <- convertToCodaObject(m.s)
+# geldiag.list.s <- summ_geldiag(post)
+# saveRDS(geldiag.list.s, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_soil.RData")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/geldiag_soil.pdf",
+#     width = 4, height = 4)
+# boxplot(geldiag.list.s, main = "Soil")
+# dev.off()
+
+# these gelman diagnostic plots are called psrf = "potential scale reduction factors"
+```
+
+Examine model fit
+```{r, echo = F}
+
+# # leaf
+# abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_leaf.RData")
+# waic.l <- computeWAIC(m.l)
+# waic.l
+# preds <- computePredictedValues(m.l)
+# fit <- evaluateModelFit(m.l, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$R2, na.rm = T)
+# fit$waic <- waic.l
+#saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits/out/fit_leaf.RData")
+# presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# waic.l <- computeWAIC(m.l)
+# waic.l
+# preds <- computePredictedValues(m.l)
+# fit <- evaluateModelFit(m.l, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$AUC, na.rm = T)
+# fit$waic <- waic.l
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_leaf.RData")
+
+# # root
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_root.RData")
+# waic.r <- computeWAIC(m.r)
+# waic.r
+# preds <- computePredictedValues(m.r)
+# fit <- evaluateModelFit(m.r, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$R2, na.rm = T)
+# fit$waic <- waic.r
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits/out/fit_root.RData")
+# presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# waic.r <- computeWAIC(m.r)
+# waic.r
+# preds <- computePredictedValues(m.r)
+# fit <- evaluateModelFit(m.r, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$AUC, na.rm = T)
+# fit$waic <- waic.r
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_root.RData")
+
+# # soil
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# waic.s <- computeWAIC(m.s)
+# waic.s
+# preds <- computePredictedValues(m.s)
+# fit <- evaluateModelFit(m.s, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$R2, na.rm = T)
+# fit$waic <- waic.s
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_soil.RData")
+# presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# waic.s <- computeWAIC(m.s)
+# waic.s
+# preds <- computePredictedValues(m.s)
+# fit <- evaluateModelFit(m.s, preds)
+# mean(fit$RMSE, na.rm = T)
+# mean(fit$AUC, na.rm = T)
+# fit$waic <- waic.s
+# saveRDS(fit, file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_soil.RData")
+
+fit.la <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_leaf.RData")
+fit.lp <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_leaf.RData")
+fit.ra <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_root.RData")
+fit.rp <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_root.RData")
+fit.sa <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/fit_soil.RData")
+fit.sp <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/fit_soil.RData")
+
+fit.list <- list(la = fit.la, lp = fit.lp,
+                 ra = fit.ra, rp = fit.rp,
+                 sa = fit.sa, sp = fit.sp)
+fit.df <- data.frame(
+  rmse = lapply(fit.list, function(x){mean(x$RMSE, na.rm = T)}),
+  r2 = lapply(fit.list, function(x){mean(x$R2, na.rm = T)}),
+  auc = lapply(fit.list, function(x){mean(x$AUC, na.rm = T)}),
+  waic =  lapply(fit.list, function(x){x$waic}),
+  stringsAsFactors = F)
+fit.df %>%
+  gather(key = "term", value = "value") %>%
+  separate(term, into = c("measure","mod")) %>%
+  separate(mod, into = c("tissue","model"), sep = 1) %>%
+  mutate(tissue = ifelse(tissue == "l", "Leaf",
+                         ifelse(tissue == "r", "Root", "Soil"))) %>%
+  mutate(model = ifelse(model == "a", "Abundance", "Presence")) %>%
+  spread(key = measure, value = value) %>%
+  dplyr::select(tissue, model, waic, rmse, r2, auc) -> fit.df
+fit.df
+#write.csv(fit.df, file = file.path(out_path, "hmsc_fits.csv"))
+
+```
+
+Examine "species niches" as structured by phylogeny (commented out)
+```{r, include = F}
+
+# leaf
+# abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_leaf.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.l, parName = "Beta") 
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/Beta_leaf.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.l, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95, 
+#          split = 0.4, 
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.l)
+# summary(mpost$Rho)$quantiles
+# presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.l, parName = "Beta") 
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/Beta_leaf.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.l, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95, 
+#          split = 0.4, 
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.l)
+# summary(mpost$Rho)$quantiles
+
+# root
+#m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits/out/m_root.RData")
+# plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.r, parName = "Beta") 
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits/out/Beta_root.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.r, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95, 
+#          split = 0.4, 
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.r)
+# summary(mpost$Rho)$quantiles
+# presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.r, parName = "Beta")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/Beta_root.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.r, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95,
+#          split = 0.4,
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.r)
+# summary(mpost$Rho)$quantiles
+
+# soil
+# abundance
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/Beta_soil.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.s, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95,
+#          split = 0.4,
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.s)
+# summary(mpost$Rho)$quantiles
+# presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# # plot ASV-environment relationships on the phylogeny
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# pdf(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/Beta_soil.pdf",
+#     width = 8, height = 8)
+# plotBeta(m.s, post = postBeta, param = "Sign", plotTree = TRUE,
+#          supportLevel = 0.95,
+#          split = 0.4,
+#          spNamesNumbers = c(F,F))
+# dev.off()
+# # distribution of estimated rho parameters (role of phylo corr where 1 = ASV response depends highly on phylogeny)
+# mpost <- convertToCodaObject(m.s)
+# summary(mpost$Rho)$quantiles
+
+```
+
+Plot the distribution of the rho parameter for each model (commented out)
+```{r, include = F}
+# m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_leaf.RData")
+# mpost.la <- convertToCodaObject(m)
+# m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# mpost.lp <- convertToCodaObject(m)
+# 
+# m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_root.RData")
+# mpost.ra <- convertToCodaObject(m)
+# m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# mpost.rp <- convertToCodaObject(m)
+# 
+# m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# mpost.sa <- convertToCodaObject(m)
+# m <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# mpost.sp <- convertToCodaObject(m)
+# 
+# df <- data.frame(quant = names(summary(mpost.la$Rho)$quantiles),
+#                  la = summary(mpost.la$Rho)$quantiles,
+#            lp = summary(mpost.lp$Rho)$quantiles,
+#            ra = summary(mpost.ra$Rho)$quantiles,
+#            rp = summary(mpost.rp$Rho)$quantiles,
+#            sa = summary(mpost.sa$Rho)$quantiles,
+#            sp = summary(mpost.sp$Rho)$quantiles,
+#            row.names = NULL, stringsAsFactors = F)
+# df
+# df %>%
+#   gather(key = "type", value = "rho", -quant) %>%
+#   separate(type, into = c("tissue","model"), sep = 1) %>%
+#   mutate(tissue = ifelse(tissue == "l", "Leaf",
+#                          ifelse(tissue == "r", "Root",
+#                                 ifelse(tissue == "s", "Soil", NA)))) %>%
+#   mutate(model = ifelse(model == "a", "Abundance",
+#                         ifelse(model == "p", "Presence-absence", NA))) %>%
+#   spread(key = quant, value = rho) %>%
+#   mutate(model.num = ifelse(model == "Abundance", 1, 2))-> df.plot
+# #colnames(df.plot)
+# 
+# offset <- 0.1
+# names(tissue.colors) <- c("Leaf","Root", "Soil")
+# 
+# p <- ggplot(df.plot, aes(x = model.num, y = `50%`, color = tissue)) +
+#   geom_point() +
+#   geom_errorbar(aes(ymin = `2.5%`, ymax = `97.5%`), width = .1) +
+#   geom_rect(aes(ymin = `25%`, ymax = `75%`, 
+#                 xmin = model.num - offset, xmax = model.num + offset), 
+#             fill = "transparent") +
+#   facet_grid(~tissue) +
+#   ylab("Rho estimate (quantiles)") +
+#   xlab("Model type") +
+#   scale_x_continuous(breaks = c(1,2), 
+#                      labels = c("Abundance","Presence\n-absence"),
+#                      limits = c(0.5,2.5)) +
+#   scale_color_manual(values = tissue.colors) +
+#   theme_classic() +
+#   guides(color = F)
+# p
+# 
+# ggsave(p, filename = file.path(out_path, "hmsc_rho.png"),
+#        width = 5, height = 3.5)
+```
+
+Print tables
+*leaf*
+```{r, include = F}
+#abundance
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_leaf.RData")
+# postBeta = getPostEstimate(m.l, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.l$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.l$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.l$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_leaf.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Abundance") -> df.l.signif.ab
+
+
+# presence/absence
+# m.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_leaf.RData")
+# postBeta = getPostEstimate(m.l, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.l$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.l$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.l$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# 
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_leaf.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Presence") -> df.l.signif.pr
+# 
+# df <- rbind(df.l.signif.ab, df.l.signif.pr)
+# # write.csv(df.l.signif, file = file.path(out_path, "hmsc_leaf_pr.csv"))
+# write.csv(df, file = file.path(out_path, "hmsc_leaf.csv"))
+
+```
+*root*
+```{r, include = F}
+#abundance
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_root.RData")
+# postBeta = getPostEstimate(m.r, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.r$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.r$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.r$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_root.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Abundance") -> df.l.signif.ab
+
+# # presence/absence
+# m.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_root.RData")
+# postBeta = getPostEstimate(m.r, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.r$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.r$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.r$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# 
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_root.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Presence") -> df.l.signif.pr
+# 
+# df <- rbind(df.l.signif.ab, df.l.signif.pr)
+# write.csv(df, file = file.path(out_path, "hmsc_root.csv"))
+
+```
+*soil*
+```{r, include = F}
+# #abundance
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_ab/out/m_soil.RData")
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.s$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.s$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.s$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_soil.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Abundance") -> df.l.signif.ab
+# dim(df.l.signif.ab)
+
+# # presence/absence
+# m.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/out/m_soil.RData")
+# postBeta = getPostEstimate(m.s, parName = "Beta")
+# names(postBeta)
+# # create DF of ASV-environment relationships
+# df.m <- data.frame(term = colnames(m.s$X), postBeta$mean)
+# df.m %>%
+#   gather(key = "ASV", value = "mean", -term) -> df.m.l
+# df.u <- data.frame(term = colnames(m.s$X), postBeta$support)
+# df.u %>%
+#   gather(key = "ASV", value = "support", -term) -> df.u.l
+# df.l <- data.frame(term = colnames(m.s$X), postBeta$supportNeg)
+# df.l %>%
+#   gather(key = "ASV", value = "supportNeg", -term) -> df.l.l
+# df.m.l %>%
+#   left_join(df.u.l) %>%
+#   left_join(df.l.l) -> df.l
+# df.l %>%
+#   mutate(signif = ifelse(support >= 0.95 | supportNeg >= 0.95, TRUE, FALSE)) %>%
+#   mutate(sign = ifelse(support >= 0.95, "positive", NA)) %>%
+#   mutate(sign = ifelse(supportNeg >= 0.95, "negative", sign)) %>%
+#   filter(signif == TRUE) %>%
+#   #filter(!term %in% c("(Intercept)","lib")) %>%
+#   separate(term, into = c("term",NA), sep = "_")-> df.l.signif
+# 
+# # add ASV taxonomy info
+# ps <- readRDS(file = "data_intermediates/Illum_analyses/FUN-merged/phyloseq_withSEMdata_soil.RData")
+# tax <- data.frame(tax_table(ps), stringsAsFactors = F)
+# df.l.signif %>%
+#   left_join(tax) %>%
+#   dplyr::select(-phylum.fromBlast) %>%
+#   arrange(term, mean) %>%
+#   mutate(model = "Presence") -> df.l.signif.pr
+# dim(df.l.signif.pr)
+# 
+# df <- rbind(df.l.signif.ab, df.l.signif.pr)
+# dim(df)
+# write.csv(df, file = file.path(out_path, "hmsc_soil.csv"))
+```
+
+## 3. Prune to high confidence taxa-environment relationships, i.e. 99% CI does not overlap zero
+```{r include = F}
+
+df.l <- read.csv(file = file.path(out_path, "hmsc_leaf.csv"))
+df.r <- read.csv(file = file.path(out_path, "hmsc_root.csv"))
+df.s <- read.csv(file = file.path(out_path, "hmsc_soil.csv"))
+df.l$tissue <- "l"
+df.r$tissue <- "r"
+df.s$tissue <- "s"
+df <- rbind(df.l, df.r, df.s)
+#dim(df)
+df %>%
+  dplyr::select(-X) %>%
+  filter(!term %in% c("(Intercept)","lib")) -> df
+#dim(df)
+sel <- df$model == "Presence" & df$sign == "positive" & df$support < 0.99
+df <- df[!sel,]
+sel <- df$model == "Presence" & df$sign == "negative" & df$supportNeg < 0.99
+df <- df[!sel,]
+#dim(df)
+
+# df %>%
+#   group_by(tissue, model, sign) %>%
+#   summarize(n = length(ASV))
+
+# reshape
+df %>%
+  mutate(support.all = ifelse(sign == "positive", support, supportNeg)) %>%
+  dplyr::select(-c(support, supportNeg, signif)) %>%
+  mutate(tissue = ifelse(tissue == "l","Leaf",
+                         ifelse(tissue == "r", "Root", "Soil"))) %>%
+  dplyr::select(tissue, model, term, ASV, mean, sign, support.all, 
+                kingdom, phylum, class, order, family, genus, species, CS1) -> df
+#write.csv(df, file = file.path(out_path, "hmsc_ASVtable_subset.csv"))
+
+```
+
+## 4. Make phylogenetic tree/heat map plots
+
+Reformat the data matrix so that each row is an ASV. Also, add "ns" where ASV is present but not significant
+```{r, include = F}
+# which ASVs are present/absent across tissues?
+ps.l <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/data/phyloseq_withSEMdata_leaf.RData")
+asvs.l <- taxa_names(ps.l)
+asvs.l <- data.frame(tissue = "Leaf", ASV = asvs.l, stringsAsFactors = F)
+ps.r <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/data/phyloseq_withSEMdata_root.RData")
+asvs.r <- taxa_names(ps.r)
+asvs.r <- data.frame(tissue = "Root", ASV = asvs.r, stringsAsFactors = F)
+ps.s <- readRDS(file = "data_intermediates/Illum_analyses/hmsc_fits_pr/data/phyloseq_withSEMdata_soil.RData")
+asvs.s <- taxa_names(ps.s)
+asvs.s <- data.frame(tissue = "Soil", ASV = asvs.s, stringsAsFactors = F)
+asvs.df <- rbind(asvs.l, asvs.r, asvs.s)
+
+# add info about ASV-environ relationships
+df.l.signif <- read.csv(file = file.path(out_path, "hmsc_ASVtable_subset.csv"), row.names = 1, stringsAsFactors = F)
+
+# function to fill in "ns" if ASV is present
+fill_ns <- function(tmp, grepl.x){
+  
+  #tmp = asv.df2.abund
+  #grepl.x = "Leaf"
+  
+  cols <- colnames(tmp)[grepl(grepl.x,colnames(tmp))]
+  if(grepl.x == "Leaf"){
+    rows <- tmp$tissue == "Leaf"
+  }
+  if(grepl.x == "Root"){
+    rows <- tmp$tissue == "Root"
+  }
+  if(grepl.x == "Soil"){
+    rows <- tmp$tissue == "Soil"
+  }
+  for(i in 1:length(cols)){
+    cols[i]
+    x <- is.na(tmp[rows,cols[i]])
+    tmp[rows,cols[i]][x] <- "ns"
+  }
+  return(tmp)
+}
+
+# function to reshape for plotting
+reshape_asvSign_df <- function(df.l.signif, asvs.df, curr.model){
+  
+  #curr.model = "Abundance"
+  
+  # select data for the current model type (Abundance/Presence)
+  df.l.signif %>%
+    filter(model == curr.model) %>%
+    dplyr::select(tissue, ASV, term, sign) -> df.l.tmp
+  
+  # add the significant sign relationships to the full table of ASVs
+  # create the tissue.term variable
+  asvs.df %>%
+    left_join(df.l.tmp) %>%
+    mutate(tissue.term = paste0(tissue, "__",term)) %>%
+    dplyr::select(-term) %>%
+    spread(key = tissue.term, value = sign) -> asv.df1
+  # remove NAs in tissue.term variable
+  asv.df2 <- asv.df1[,!colnames(asv.df1) %in% c("Leaf__NA","Root__NA","Soil__NA")]
+  
+  # add any missing tissue.term levels as columns of NA
+  ttl.indx <- unique(df.l.signif[,c("term","tissue")])
+  ttl.indx %>%
+    mutate(tissue.term = paste0(tissue, "__",term)) -> ttl.indx
+  missing.cols <- ttl.indx$tissue.term[!ttl.indx$tissue.term %in% colnames(asv.df2)]
+  # add cols with only ns
+  new.cols <- matrix(NA, nrow = dim(asv.df2)[1], ncol = length(missing.cols))
+  colnames(new.cols) <- missing.cols
+  asv.df2 <- cbind(asv.df2, new.cols)
+  
+  # fill in NAs with "ns" if the ASV is present in the leaf/root/soil
+  asv.df2 <- fill_ns(tmp = asv.df2, grepl.x = "Leaf")
+  asv.df2 <- fill_ns(tmp = asv.df2, grepl.x = "Root")
+  asv.df2 <- fill_ns(tmp = asv.df2, grepl.x = "Soil")
+
+  # reshape so that each ASV is a row
+  asv.df2 %>%
+    gather(key = "tissue.term", value = "sign", -c(tissue, ASV)) %>%
+    filter(!is.na(sign)) %>%
+    dplyr::select(-tissue) %>%
+    spread(key = tissue.term, value = sign) -> asv.currmod
+
+  return(asv.currmod)
+  
+}
+
+# make dfs
+asv.abund <- reshape_asvSign_df(df.l.signif, asvs.df, curr.model = "Abundance")
+asv.pres <- reshape_asvSign_df(df.l.signif, asvs.df, curr.model = "Presence")
+
+```
+
+Make the phylogenetic tree -- define the data matrix, phylum nodes, and key classes
+```{r, include = F}
+library(ggtree)
+library(cowplot)
+library(aplot) # for ylim2()
+library(phangorn) # for Decendents and Siblings
+
+phylum.levels <- c("p__Ascomycota",
+                   "p__Basidiomycota",
+                   "p__Glomeromycota",
+                   "p__Chytridiomycota")
+phylum.colors <- c("#404285","#42858C","#570D32","#dd9933")
+
+
+# load data
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+tree <- ape::read.nexus(file = "data_intermediates/phylogeneticTree/asv_tax_nounkp_formated.tre")
+
+# make the basic tree and tree data from the phyloseq object
+asvs <- taxa_names(ps)
+tree <- ape::keep.tip(tree, asvs)
+phy_tree(ps)<- tree
+p.tree <- ggtree(ps, ladderize = T) 
+head(p.tree$data)
+p.tree$data %>%
+  dplyr::select(label, node, isTip, x, y, ASV, phylum, class, order, family, genus, species) %>%
+  unique() -> tree.dat
+
+# find the phylum nodes
+x <- tree.dat$isTip == TRUE & tree.dat$phylum == "p__Ascomycota"
+asco.node <- MRCA(tree, tree.dat[x,"node"])
+phy.nodes <- Siblings(tree, asco.node, include.self = T)
+#length(phy.nodes)
+phy.id <- list()
+phy.asvs<- list()
+for(i in 1:length(phy.nodes)){
+  tree.dat %>%
+    filter(node %in% Descendants(tree, phy.nodes[[i]], type = "tips")[[1]]) -> sel.tips
+  phy.id[[i]]<- as.character(unique(sel.tips$phylum))
+  phy.asvs[[i]] <- as.character(sel.tips$ASV)
+}
+phylum.indx <- data.frame(node = phy.nodes, phylum = unlist(phy.id))
+#phylum.indx
+phylum.indx %>%
+  separate(phylum, into = c(NA, "phylum.name"), remove = F) -> phylum.indx
+names(phy.asvs) <- phylum.indx$phylum.name
+
+#phy.asvs
+Mucoro.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Mucoromycota[[1]],"node"]
+Basidiobolo.node <- tree.dat[tree.dat$isTip == TRUE & tree.dat$ASV == phy.asvs$Basidiobolomycota[[1]],"node"]
+Blastocladio.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Blastocladioomycota[[1]],"node"]
+Entorrhizo.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Entorrhizomycota[[1]],"node"]
+Zoopago.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Zoopagomycota[[1]],"node"]
+Kickxello.node <- tree.dat[tree.dat$isTip == TRUE & 
+                                tree.dat$ASV == phy.asvs$Kickxellomycota[[1]],"node"]
+
+# create and label the tree
+labeltree <- groupOTU(tree, phy.asvs)
+phylum.levels <- c("Ascomycota",
+                   "Basidiomycota",
+                   "Glomeromycota",
+                   "Chytridiomycota",
+                   "Basidiobolomycota",
+                   "Blastocladiomycota",
+                   "Mortierellomycota",
+                   "Entorrhizomycota",
+                   "Zoopagomycota",
+                   "Rozellomycota",
+                   "Kickxellomycota",
+                   "Mucoromycota",
+                   "Other")
+
+
+phylum.colors <- c("#1d3554","#42858C","#570D32","#dd9933", rep("#000000", 9))
+#phylum.colors
+names(phylum.colors) <- phylum.levels
+
+#phy.asvs
+p <- ggtree(labeltree, aes(color=group), size = 0.2) +
+  scale_color_manual(values = phylum.colors)
+#p
+#geom_nodepoint(color="black", size=0.1) 
+p1 <- p + geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Ascomycota","node"], 
+                    label="Ascomycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"], 
+                    label="Basidiomycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], 
+                    label="Glomeromycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], 
+                    label="Chytridiomycota", offset = 150,
+                    align = T) +
+  geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], 
+                    label="Rozellomycota", offset = 150,
+                    align = T) +
+    geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"], 
+                    label="Mortierellomycota", offset = 150,
+                    align = T)
+  # geom_cladelabel(node = phylum.indx[phylum.indx$phylum.name == "Blastocladiomycota","node"], 
+  #                   label="Blastocladio", 
+  #                   align = T) +
+  # geom_cladelabel(node = Mucoro.node, 
+  #                   label="Mucoro", 
+  #                   align = T) +
+  # geom_cladelabel(node = Basidiobolo.node, 
+  #                   label="Basidiobolo", 
+  #                   align = T) +
+  # geom_cladelabel(node = Entorrhizo.node, 
+  #                   label="Entorrhizo", 
+  #                   align = T) +
+  # geom_cladelabel(node = Zoopago.node, 
+  #                   label="Zoopago", 
+  #                   align = T) +
+  # geom_cladelabel(node = Kickxello.node, 
+  #                   label="Kickxello", 
+  #                   align = T) 
+p1 %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Ascomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"], scale = .01) %>%
+  scaleClade(node = phylum.indx[phylum.indx$phylum.name == "Mucoromycota","node"], scale = .01) + xlim_tree(1000) -> p1.tmp 
+p1.tmp
+
+# flip around the phyla so they are in a order that matches 
+# topology in Tedersoo et al 2018
+# order in the tree:
+#asco (x)
+#basidio (x) 
+#entorrhizo
+#glomero
+#mortierello
+#mucoro
+#kickxello
+#zoopago
+#basidiobolo
+#chytridio
+#blastocladio
+#rozello
+p1 %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) +
+  xlim_tree(1000) -> p2
+p2
+p.leg <- p2 + theme(legend.position="right")
+legend <- cowplot::get_legend(p.leg)
+
+# do this for the plot w/o labels
+p %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Glomeromycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Basidiomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Rozellomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) %>%
+  flip(phylum.indx[phylum.indx$phylum.name == "Chytridiomycota","node"], 
+       phylum.indx[phylum.indx$phylum.name == "Mortierellomycota","node"]) +
+  xlim_tree(1000) -> p2.nolab
+#p2.nolab
+
+# extract class info with this function
+extract.mrca.class <- function(tree.dat, class.tab, tree){
+  mrca.list <- list()
+  i<-1
+  for(i in 1:dim(class.tab)[1]){
+    tree.dat %>%
+      filter(isTip == TRUE) %>%
+      filter(class == class.tab$class[i]) -> tmp
+    mrca.list[[i]]<- MRCA(tree, as.character(tmp$ASV))
+  }
+  class.tab$node <- unlist(mrca.list)
+  return(class.tab)
+}
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Ascomycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> asco.classes
+asco.classes <- extract.mrca.class(tree.dat, class.tab = asco.classes, tree)
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Basidiomycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> basidio.classes
+basidio.classes <- extract.mrca.class(tree.dat, class.tab = basidio.classes, tree)
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Glomeromycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> glomero.classes
+glomero.classes <- extract.mrca.class(tree.dat, class.tab = glomero.classes, tree)
+
+tree.dat %>%
+  filter(isTip == TRUE) %>%
+  filter(phylum %in% c("p__Chytridiomycota")) %>%
+  group_by(class) %>%
+  summarize(n = length(unique(ASV))) %>%
+  arrange(-n) %>%
+  filter(n >= 10) %>%
+  filter(!is.na(class)) -> chytrid.classes
+
+# highlight key classes in ascos and basidios
+#asco.classes
+d <- asco.classes[asco.classes$class == "c__Dothideomycetes","node"][[1]]
+e <- asco.classes[asco.classes$class == "c__Eurotiomycetes","node"][[1]]
+s <- asco.classes[asco.classes$class == "c__Sordariomycetes","node"][[1]]
+p <- asco.classes[asco.classes$class == "c__Pezizomycetes","node"][[1]]
+
+#basidio.classes
+a <- basidio.classes[basidio.classes$class == "c__Agaricomycetes","node"][[1]]
+t <- basidio.classes[basidio.classes$class == "c__Tremellomycetes","node"][[1]]
+pu <- basidio.classes[basidio.classes$class == "c__Pucciniomycetes","node"][[1]]
+
+#glomero.classes
+g <- glomero.classes[glomero.classes$class == "c__Glomeromycetes","node"][[1]]
+pg <- glomero.classes[glomero.classes$class == "c__Paraglomeromycetes","node"][[1]]
+ar <- glomero.classes[glomero.classes$class == "c__Archaeosporomycetes","node"][[1]]
+
+p2 +
+  # ascos
+  geom_hilight(node=d, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = d, label = "Dothideomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=s, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = s, label = "Sordariomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=e, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = e, label = "Eurotiomycetes", 
+                  color = "gray",  fontsize = 2) +
+  geom_hilight(node=p, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = p, label = "Pezizomycetes", 
+                  color = "gray", fontsize = 2) +
+  # basidios
+  geom_hilight(node=a, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = a, label = "Agaricomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=t, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = t, label = "Tremellomycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=pu, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = pu, label = "Pucciniomycetes", 
+                  color = "gray", fontsize = 2) +
+  # glomeros
+  geom_hilight(node=g, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = g, label = "Glomeromycetes", 
+                  color = "gray", fontsize = 2) +
+  geom_hilight(node=pg, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = pg, label = "Paraglomeromycetes", 
+                  color = "gray",fontsize = 2) +
+  geom_hilight(node=ar, alpha = .2, fill = "gray") +
+  geom_cladelabel(node = ar, label = "Archaeosporomycetes", 
+                  color = "gray",  fontsize = 2) -> p3
+
+```
+
+Make the tile plot and combine it with the tree
+```{r, echo = F}
+#asv.abund
+#asv.pres
+
+# make tileplot -- abund
+p2$data %>%
+  filter(isTip == TRUE) %>%
+  mutate(ASV = label) %>%
+  dplyr::select(y, ASV) %>%
+  unique() %>%
+  arrange(y) %>%
+  left_join(asv.abund) %>%
+  dplyr::select(-c(ASV)) %>%
+  gather(key = "term", value = "sign", -c(y)) -> plot.df.abund
+#unique(plot.df.abund$term)
+ord.terms <- c("Leaf__K", "Leaf__P", "Leaf__max.height.m", "Leaf__ph",
+               "Root__Mn", "Root__ph", "Root__perc.clay", "Root__max.height.m",
+               "Soil__stand.age.yrs.num", "Soil__doc", "Soil__TIN",
+               "Soil__perc.clay", "Soil__Cu")  
+#unique(plot.df.abund$term)[!unique(plot.df.abund$term) %in% ord.terms]
+
+plot.df.abund$term <- factor(plot.df.abund$term, levels = ord.terms)
+p1.abund <- ggplot(plot.df.abund, aes(x=term, y=y, fill = sign)) + 
+  geom_tile() +
+  scale_fill_manual(values = c("positive"="#E59E25", #light orange
+                               "negative"="#5BB5E7", #light blue
+                               "ns"="#F0F0F0"), na.value=NA) +
+  theme_tree2() +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(position = "top", expand = c(0,0)) 
+#p1.abund
+p1.abund <- p1.abund + ylim2(p3)
+
+##E59E25 light orange
+##5BB5E7 light blue
+#positive"="#D35E1A", #dark orange
+#"negative"="#1074B0", # dark blue
+
+# make tileplot -- presence
+p2$data %>%
+  filter(isTip == TRUE) %>%
+  mutate(ASV = label) %>%
+  dplyr::select(y, ASV) %>%
+  unique() %>%
+  arrange(y) %>%
+  left_join(asv.pres) %>%
+  dplyr::select(-c(ASV)) %>%
+  gather(key = "term", value = "sign", -c(y)) -> plot.df.p
+#unique(plot.df.p$term)
+#unique(plot.df.p$term)[!unique(plot.df.p$term) %in% ord.terms]
+
+plot.df.p$term <- factor(plot.df.p$term, levels = ord.terms)
+p1.p <- ggplot(plot.df.p, aes(x=term, y=y, fill = sign)) + 
+  geom_tile() +
+  scale_fill_manual(values = c("positive"="#E59E25", #light orange
+                               "negative"="#5BB5E7", #light blue
+                               "ns"="#F0F0F0"), na.value=NA) +
+  theme_tree2() +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_discrete(position = "top", expand = c(0,0)) 
+#p1.p
+p1.p <- p1.p + ylim2(p3)
+
+#theme(axis.text.x = element_text(angle = 90))
+#+ xlim_tree(50)
+
+# abund
+big.plot <- plot_grid(p2.nolab + 
+  scale_x_continuous(limits = c(0,600)), 
+          p1.abund + guides(fill = F), 
+          align='h', rel_widths = c(2.5,1), nrow = 1)
+#big.plot
+# ggsave(big.plot, filename = file.path(out_path, "phyloAll_abund.png"),
+#        width = 10, height = 10)
+
+
+# presence
+big.plot <- plot_grid(p2.nolab + 
+  scale_x_continuous(limits = c(0,600)), 
+          p1.p + guides(fill = F), 
+          align='h', rel_widths = c(2.5,1), nrow = 1)
+big.plot
+p3
+# ggsave(big.plot, filename = file.path(out_path, "phyloAll_pres.png"),
+#        width = 10, height = 10)
+# 
+# 
+# ggsave(p3, filename = file.path(out_path,"phyloAll_annotated.png"),
+#        width = 10, height = 10)
+```
+
+_______________________________
+# E. Followups 
+
+## 1. Varpart -- Leaf fungi explained by lat lon versus environmental matrix (based on SEM)? (commented out)
+```{r, include = F}
+# mat.vars <- read.csv(file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"), row.names = 1)
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# 
+# dpcoa <- readRDS("output/illumina/Q0/dpcoa_leaf.RData")
+# dpcoa.dist <- dpcoa$RaoDis
+# #row.names(dpcoa$tab) == mat.vars$sample.name.match
+# require(vegan)
+# mod1 <- capscale(dpcoa.dist ~ ph + K + P + max.height.m + MAP.mm + samp.lon + samp.lat, data = mat.vars)
+# anova(mod1, by = "terms")
+# 
+# mod2 <- varpart(dpcoa.dist, ~ ph + K + P + max.height.m + MAP.mm, ~ samp.lon + samp.lat, data = mat.vars)
+# plot(mod2)
+
+```
+
+
+## 2. Enough variance explained by VST PCoA1 to do SEM? (commented out)
+```{r, include = F}
+
+# library("DESeq2")
+# 
+# # leaf
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# ## calculate vst
+# ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+# geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+# ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+# ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+# #plotDispEsts(ps_ds) # plot the dispersion estimates
+# vst <- getVarianceStabilizedData(ps_ds)
+# vst <- t(vst) # need to make the rows samples
+# ## do ordination with Euclidean distances
+# mod <- prcomp(vst)
+# summary(mod)$importance[,1:2] # PC1 explains 9.4%
+# 
+# 
+# # root
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# ## calculate vst
+# ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+# geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+# ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+# ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+# #plotDispEsts(ps_ds) # plot the dispersion estimates
+# vst <- getVarianceStabilizedData(ps_ds)
+# vst <- t(vst) # need to make the rows samples
+# ## do ordination with Euclidean distances
+# mod <- prcomp(vst)
+# summary(mod)$importance[,1:2] # PC1 explains 5.2%
+# 
+# # soil
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+# ## calculate vst
+# ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+# geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+# ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+# ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+# #plotDispEsts(ps_ds) # plot the dispersion estimates
+# vst <- getVarianceStabilizedData(ps_ds)
+# vst <- t(vst) # need to make the rows samples
+# ## do ordination with Euclidean distances
+# mod <- prcomp(vst)
+# summary(mod)$importance[,1:2] # PC1 explains 6.0%
+
+
+```
+Not very much variation in the community is explained by PC1 using VST. PC1 explains 9.4% (Leaf), 5.2% (Root), 6.0% (Soil).
+
+
+
+
+
+

@@ -1,0 +1,1406 @@
+---
+title: "IllumFUN_Q2bc: SEMs"
+author: "Marissa Lee"
+date: "12/16/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Q2. How are differences in fungal composition across the landscape explained by environmental variables?
+
+*Table of contents*
+
+#### 0. Load data and pre-process ASV matrix
+See IllumFUN_Q1.Rmd
+
+#### A. Determine which environmental variables to include in path analysis
+See IllumFUN_Q2a.Rmd
+
+#### B. SEM using DPCoA1 score to represent community
+1. Plot tissue-specific DPCoAs
+2. Construct tissue-specific SEMs
+
+#### C. Investigate SEM results with bivariate plots
+1. Set up functions, levels, colors
+2. Make plotting dataframes -- samples
+3. Make plotting dataframes -- ASVs
+4. Plot -- direct effects
+5. Plot -- indirect effects
+
+________________________________
+
+Load packages, functions, paths
+```{r, include = F}
+
+# paths
+merged_path <- "data_intermediates/Illum_analyses/FUN-merged"
+out_path <- "output/illumina/Q2"
+
+# custom functions
+source("code/helpers.R") # misc helpful fxns
+#sourceDir("code") # loads all the custom functions in this folder
+
+# formatting
+require("tidyverse"); packageVersion("tidyverse")
+require("readxl"); packageVersion("readxl") # to read in excel files
+#library("gridExtra"); packageVersion("gridExtra")
+library("phyloseq");  packageVersion("phyloseq")
+library("speedyseq")
+
+# stats
+library("corrplot")
+library("MVN")
+#library("vegan"); packageVersion("vegan") # vif.cca() function
+#library("jtools"); packageVersion("jtools") # used to test environmental differences based on plot type
+#library("car"); packageVersion("car") # has vif tools
+#library(MCMCpack)
+#library(MCMCvis)
+#library(Hmsc)
+
+
+```
+
+Custom functions
+```{r, include=FALSE}
+
+# calc geometric mean of each ASV
+gm_mean = function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+
+update_vst <- function(ps){
+  
+  require(DESeq2)
+  require(phyloseq)
+  
+  ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+  geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+  ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+  ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+  #plotDispEsts(ps_ds) # plot the dispersion estimates
+  vst <- getVarianceStabilizedData(ps_ds)
+  vst <- t(vst) # need to make the rows samples
+  
+  ps.new <- ps
+  otu_table(ps.new) <- otu_table(vst, taxa_are_rows = F)
+  return(ps.new)
+  
+}
+
+
+```
+
+________________________________
+
+# B. SEM using DPCoA1 score to represent fungal communities
+
+## 1. Plot Tissue-specific DPCoAs (example for leaf taxa)
+```{r, echo = F}
+# leaf
+ps.l <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+dpcoa.l <- readRDS("output/illumina/Q0/dpcoa_leaf.RData")
+plot_ordination(ps.l, dpcoa.l, type="split",
+                color = "phylum", shape = "Tissue") +
+  ggplot2::scale_colour_discrete() +
+  ggplot2::theme_bw() +
+  ggtitle("Leaf")
+# ggsave(filename = file.path(out_path, "dpcoa_l.pdf"),
+#        width = 6, height = 4)
+
+# root
+ps.r <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+dpcoa.r <- readRDS("output/illumina/Q0/dpcoa_root.RData")
+# plot_ordination(ps.r, dpcoa.r, type="split",
+#                 color = "phylum", shape = "Tissue") +
+#   ggplot2::scale_colour_discrete() +
+#   ggplot2::theme_bw() +
+#   ggtitle("Root")
+# ggsave(filename = file.path(out_path, "dpcoa_r.pdf"),
+#        width = 6, height = 4)
+
+# soil
+ps.s <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+dpcoa.s <- readRDS("output/illumina/Q0/dpcoa_soil.RData")
+# plot_ordination(ps.s, dpcoa.s, type="split",
+#                 color = "phylum", shape = "Tissue") +
+#   ggplot2::scale_colour_discrete() +
+#   ggplot2::theme_bw() +
+#   ggtitle("Soil") +
+#   scale_x_reverse()
+# ggsave(filename = file.path(out_path, "dpcoa_s_reverseX.pdf"),
+#        width = 6, height = 4)
+
+
+```
+
+## 2. Construct Tissue-specific SEMs
+
+*Leaf* (example)
+Full model:
+```{r}
+# set up sem
+library(lavaan)
+library(semPlot)
+library(corrplot)
+
+mat.vars <- read.csv(file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+# pdf(file = file.path(out_path, "corrplot_sem_leaf.pdf"), width = 8, height = 8)
+# corrplot(cor.mat, method = "number", type = "lower")
+# dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + ph + P + K + Mn + TIN + perc.sand + max.height.m
+               
+             # effect of texture on resources
+                ph + P + K + Mn + TIN ~ perc.sand
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ MAP.mm + ph + P + K + Mn + TIN + perc.sand
+                
+             # covariances
+               '
+#
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+```
+
+Trimmed model:
+```{r}
+# do model trimming by removing ns paths
+# 0. (chisq =124, p < 0.001)
+# 1. add covariances with mi > 10 (42)
+# 2. examine residuals
+# P and Mn (0.258)
+# Mn and TIN (-0.21)
+# remove TIN (31)
+# 3. examine residuals
+# P and Mn
+# K and MAP
+# remove Mn (15, df = 4, p = 0.004)
+# 4. examine residuals
+# K and MAP
+# remove MAP from predicting height (15, df = 5, p = 0.008)
+# 5. remove K from predicting height (16, df = 6, p = 0.013)
+# 6. remove sand from predicting Ax1 (16, df = 7, p = 0.023)
+# 7. examine residuals
+# K and MAP
+# option1: remove MAP (2.4, df = 3, p = 0.484, CFI = 1, RMSEA = 0, AIC = 461)
+# option2: remove K (8.9, df = 5, p = 0.113, CFI = 0.94, RMSEA = 0.08, AIC = 547)
+
+
+# myModel.trimmed <- '# direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + ph + P + max.height.m
+#                
+#              # effect of texture on resources
+#                 ph + P ~ perc.sand
+#               
+#              # effect of stand age on resources
+#                   
+#              # effect of climate, resources, texture and stand age on plant size
+#                 max.height.m ~ ph + P + perc.sand
+#                 
+#              # covariances
+#              #ph ~~ K
+#              #P ~~ K
+#               '
+
+
+myModel.trimmed <- '# direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ ph + P + K + max.height.m
+               
+             # effect of texture on resources
+                ph + P + K ~ perc.sand
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ ph + P + perc.sand
+                
+             # covariances
+             ph ~~ K
+             P ~~ K
+              '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE)
+capture.output(summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE), 
+               file = file.path(out_path,"sem_l_std.txt"))
+
+summary(fit, rsquare = TRUE)
+capture.output(summary(fit, rsquare = TRUE), 
+               file = file.path(out_path,"sem_l_unstd.txt"))
+
+fitm <- fitMeasures(fit)
+fitm
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+fitm['aic']
+
+# modindices(fit) %>%
+#   filter(mi > 1) %>%
+#   arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+```
+
+Multiple regression:
+```{r}
+modl <- lm(Axis1 ~ max.height.m + ph + K + P + perc.sand, data = mat.vars)
+an <- anova(modl)
+afss <- an$"Sum Sq"
+cbind(an,PctExp=afss/sum(afss)*100)
+#capture.output(print(cbind(an,PctExp=afss/sum(afss)*100)), file = "leaf_mr.txt")
+
+```
+
+*Leaf* - including lat and lon (commented out)
+```{r, include = F}
+# set up sem
+#library(lavaan)
+#library(semPlot)
+#library(corrplot)
+# 
+# mat.vars <- read.csv(file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"), 
+#                      row.names = 1)
+# cor.mat <- cor(mat.vars[,-c(1:3)])
+# # pdf(file = file.path(out_path, "corrplot_sem_leaf.pdf"), width = 8, height = 8)
+# # corrplot(cor.mat, method = "number", type = "lower")
+# # dev.off()
+# 
+# myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + ph + P + K + Mn + TIN + perc.C + max.height.m + stand.age.yrs.num + samp.lon + samp.lat
+#                
+#              # effect of texture on resources
+#               
+#              # effect of stand age on resources
+#                 ph + P + K + Mn + TIN + perc.C ~ stand.age.yrs.num
+#                 
+#              # effect of climate, resources, texture and stand age on plant size
+#                 max.height.m ~ MAP.mm + ph + P + K + Mn + TIN + perc.C + stand.age.yrs.num
+#                 
+#              # covariances
+#                '
+# #
+# fit <- sem(myModel, data=mat.vars)
+# semPaths(fit, what='std', layout = 'spring')
+# summary(fit, standardized=TRUE)
+# # pvalue 0 (aka model doesn't fit the data)
+# fitm <- fitMeasures(fit)
+# fitm['cfi'] # for CFI, a reasonable fit would be over .9
+# fitm['rmsea'] # for RMSEA, 0.08 is ok
+# # this model isn't terrible, but doesn't fit
+# modindices(fit) %>%
+#   filter(op == "~~") %>%
+#   filter(mi > 10) %>%
+#   arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq =493, p < 0.001)
+# 1. add covariances with mi > 10 (345)
+# 2. remove vars not predicted by stand age: ph, K (312)
+# 3. remove vars that do not predict height: TIN (312)
+# 4. remove vars that do not predict Ax1: samp.lon (261)
+# 5. examine residuals
+# Mn and Ax1 (0.48)
+# height and Ax1 (-0.309)
+# Mn and ph (0.424)
+# Mn and K (0.442)
+# TIN and MAP (0.321)
+# TIN and samp.lat (-0.303)
+# height and samp.lat (0.301)
+# remove Mn (103)
+# 6. examine residuals
+# remove TIN (80)
+# 7. remove K from predicting height (81)
+# 8. examine residuals
+# perc.C and K (0.314)
+# perc.C and samp.lat (-0.343)
+# height and lat (0.310)
+# remove perc.C (27)
+# 9. examine residuals
+# height and samp.lat (0.251)
+# MAP and P (0.200)
+# remove samp.lat (8.7, df = 4, p=0.068, AIC = 549)
+
+# can I remove more ns paths?
+# 10. remove standage from predicting Ax1
+# 11. remove standage from predicting P (1.1, df = 2, p = 0.568, AIC = 543)
+
+# alternatively... remove height (7.6, df = 4, p = 0.106)
+# can I remove more ns paths?
+# 10. remove stand.age.yrs from predicting Ax1
+# 11. remove ph from predicting Ax1 (6.9, df = 4, p=0.137, AIC = 613)
+
+# myModel.trimmed <-  '# direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + P + K + samp.lat
+#                
+#              # effect of texture on resources
+#               
+#              # effect of stand age on resources
+#                 P ~ stand.age.yrs.num
+#                 
+#              # effect of climate, resources, texture and stand age on plant size
+#                 #max.height.m ~ MAP.mm + ph + P + stand.age.yrs.num
+#                 
+#              # covariances
+#                '
+
+# myModel.trimmed <-  '# direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ ph + MAP.mm + P + K + max.height.m
+# 
+#              # effect of texture on resources
+# 
+#              # effect of stand age on resources
+# 
+#              # effect of climate, resources, texture and stand age on plant size
+#                 max.height.m ~ MAP.mm + ph + P + stand.age.yrs.num
+# 
+#              # covariances
+#                '
+# fit <- sem(myModel.trimmed, data=mat.vars)
+# semPaths(fit, what='std', layout = 'spring')
+# summary(fit, standardized=TRUE)
+# fitm <- fitMeasures(fit)
+# fitm['cfi'] # for CFI, a reasonable fit would be over .9
+# fitm['rmsea'] # for RMSEA, 0.08 is ok
+# fitm['aic']
+# 
+# # modindices(fit) %>%
+# #   filter(mi > 1) %>%
+# #   arrange(-mi)
+# 
+# # estimated correlations
+# #inspect(fit, what="cor.all")
+# # observed correlations
+# #lavCor(fit)
+# # residuals
+# resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+```
+
+*Root*
+```{r, include = F}
+mat.vars <- read.csv(file = file.path(out_path, "root_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+# pdf(file = file.path(out_path, "corrplot_sem_root.pdf"), width = 8, height = 8)
+# corrplot(cor.mat, method = "number", type = "lower")
+# dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + MAT.C + ph + Mn + TIN + doc + perc.C + perc.sand + perc.clay + max.height.m
+               
+             # effect of texture on resources
+                ph + Mn + TIN + doc + perc.C  ~ perc.clay + perc.sand
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ MAP.mm + MAT.C + ph + Mn + TIN + doc + perc.C + perc.clay + perc.sand
+                
+             # covariances
+               '
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq = 281, p < 0.001)
+# 1. add covariates with mi > 10 (119)
+# 2. remvoe Cu from model (80)
+# 3. remove perc.clay from predicting height (80)
+# 4. remove perc.sand from predicting height (80)
+# 5. remove doc from predicting height (81)
+# 6. examine residuals
+# TIN and MATC
+# MATC and doc
+# MATC and perc.C
+# MAP and perc.C
+# Ax1 and TIN
+# remove TIN (56)
+# 7. examine residuals
+# ph and MATC
+# percC and MAP
+# remove MATC (34)
+# 8. remove clay from predicting everything except ph (35, df = 13, p = 0.001)
+# 9. examine residuals
+# percC and MAP!
+# remove MAP from predicting height (36, df = 14, p = 0.001)
+# 10. remove sand from predicting Ax1 (36, df = 15, p = 0.001)
+# 11. remove doc (33)
+# 12. remove percC from model (14, df = 7, p = 0.037)
+# 13. examine residuals
+# height and MAP
+# Mn and MAP
+# option1 -- remove MAP (3.3, df = 4, p = 0.49, CFI = 1, RMSEA = 0, AIC = 558) BETTER MODEL
+# option2 -- remove Mn (7.4, df = 5, p = 0.192, CFI = .94, RMSEA = 0.06, AIC = 579) 
+
+
+myModel.trimmed <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ ph + Mn + perc.clay + max.height.m
+               
+             # effect of texture on resources
+                ph + Mn ~ perc.sand
+                ph  ~ perc.clay
+              
+             # effect of stand age on resources
+                  
+             # effect of climate, resources, texture and stand age on plant size
+                max.height.m ~ ph + Mn
+                
+             # covariances
+             ph ~~ Mn
+               '
+
+# myModel.trimmed <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + ph + perc.clay + max.height.m
+#                
+#              # effect of texture on resources
+#                 ph ~ perc.sand
+#                 ph  ~ perc.clay
+#               
+#              # effect of stand age on resources
+#                   
+#              # effect of climate, resources, texture and stand age on plant size
+#                 max.height.m ~ ph
+#                 
+#              # covariances
+#                '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE)
+capture.output(summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE), 
+               file = file.path(out_path,"sem_r_std.txt"))
+
+summary(fit, rsquare = TRUE)
+capture.output(summary(fit, rsquare = TRUE), 
+               file = file.path(out_path,"sem_r_unstd.txt"))
+
+
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+fitm['aic']
+
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+```
+
+Multiple regression
+```{r, include = F}
+modr <- lm(Axis1 ~ max.height.m + ph + Mn + perc.clay, data = mat.vars)
+an <- anova(modr)
+an
+afss <- an$"Sum Sq"
+#capture.output(print(cbind(an,PctExp=afss/sum(afss)*100)), file = "root_mr.txt")
+
+```
+
+*Soil*
+```{r, include = F}
+# set up sem
+#library(lavaan)
+#library(semPlot)
+#library(corrplot)
+
+mat.vars <- read.csv(file = file.path(out_path, "soil_dpcoa_SEMdata.csv"), 
+                     row.names = 1)
+cor.mat <- cor(mat.vars[,-c(1:3)])
+# pdf(file = file.path(out_path, "corrplot_sem_soil.pdf"), width = 8, height = 8)
+# corrplot(cor.mat, method = "number", type = "lower")
+# dev.off()
+
+myModel <- ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ MAP.mm + Cu + TIN + p.resin + doc + perc.clay + max.height.m + stand.age.yrs.num
+               
+             # effect of texture on resources
+                Cu + TIN + p.resin + doc  ~ perc.clay
+              
+             # effect of stand age on resources
+               Cu + TIN + p.resin + doc ~ stand.age.yrs.num
+                  
+             # effect of climate, resources, texture and stand age on plant size
+               max.height.m ~ MAP.mm + Cu + TIN + p.resin + doc + perc.clay + stand.age.yrs.num
+                
+             # covariances
+               '
+fit <- sem(myModel, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE)
+# pvalue 0 (aka model doesn't fit the data)
+fitm <- fitMeasures(fit)
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+# this model isn't terrible, but doesn't fit
+modindices(fit) %>%
+  filter(op == "~~") %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# do model trimming by removing ns paths
+# 0. (chisq = 87, p < 0.001)
+# 1. add covariates with mi > 10 (32)
+# 2. remove vars that do not predict height: Cu, TIN, p.resin (32, df = 12, p = 0.001)
+# 3. remove p.resin (27)
+# 4. remove stand age predicting doc (28)
+# 5. remove height predicting Ax1 (27)
+# 6. examine residuals
+# TIN and MAP
+# option 1: remove TIN (7.6, df =4, p = 0.106, CFI = 0.94,RMSEA = 0.9,AIC = 578)
+# option 2: remove MAP (6.7, df = 4, p = 0.152, CFI = 0.97, RMSEA = 0.08, AIC = 518) BETTER MODEL
+
+# myModel.trimmed <-  ' # direct effect of climate, resources, texture, and plant attributes on fungi
+#                Axis1 ~ MAP.mm + Cu + doc + perc.clay + stand.age.yrs.num
+#                
+#              # effect of texture on resources
+#                 Cu + doc ~ perc.clay
+#               
+#              # effect of stand age on resources
+#                 Cu ~ stand.age.yrs.num
+#                '
+
+myModel.trimmed <-  ' # direct effect of climate, resources, texture, and plant attributes on fungi
+               Axis1 ~ Cu + TIN + doc + perc.clay + stand.age.yrs.num
+               
+             # effect of texture on resources
+                Cu + TIN + doc  ~ perc.clay
+              
+             # effect of stand age on resources
+               Cu + TIN ~ stand.age.yrs.num
+                  
+             # effect of climate, resources, texture and stand age on plant size
+
+             # covariances
+               '
+fit <- sem(myModel.trimmed, data=mat.vars)
+semPaths(fit, what='std', layout = 'spring')
+summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE)
+capture.output(summary(fit, standardized=TRUE, rsquare = TRUE, fit.measures = TRUE), 
+               file = file.path(out_path,"sem_s_std.txt"))
+
+summary(fit, rsquare = TRUE)
+capture.output(summary(fit, rsquare = TRUE), 
+               file = file.path(out_path,"sem_s_unstd.txt"))
+
+
+fitm <- fitMeasures(fit)
+fitm['aic']
+fitm['cfi'] # for CFI, a reasonable fit would be over .9
+fitm['rmsea'] # for RMSEA, 0.08 is ok
+
+modindices(fit) %>%
+  filter(mi > 10) %>%
+  arrange(-mi)
+
+# estimated correlations
+#inspect(fit, what="cor.all")
+# observed correlations
+#lavCor(fit)
+# residuals
+resid(fit, "cor")
+# Large positive values indicate the model underpredicts the correlation; 
+# large negative values suggest overprediction of correlation. 
+# Usually values |r>.1| are worth closer consideration
+
+
+
+```
+
+Multiple regression
+```{r, include = F}
+mods <- lm(Axis1 ~ stand.age.yrs.num + Cu + TIN + doc, data = mat.vars)
+an <- anova(mods)
+an
+afss <- an$"Sum Sq"
+capture.output(print(cbind(an,PctExp=afss/sum(afss)*100)), file = "soil_mr.txt")
+
+```
+_______________________________
+# C. Investigate SEM results with bivariate plots
+
+## 1. Set up functions, levels, colors
+
+Format dataframe functions
+```{r, include = F}
+# mat.path = "leaf_dpcoa_SEMdata.csv"
+# ps.path = "phyloseq_samps_env_trimTreeASVs_leaf.RData"
+# dpcoa.path = "output/illumina/Q0/dpcoa_leaf.RData"
+# attr.path = "scaledmat.RData"
+
+
+format_postsem_dfs <- function(mat.path, ps.path, dpcoa.path, attr.path){
+  
+  transNotscaled_path <- "normTransformed_contvars_trim.csv"
+  
+  # load the data used for the sem, update the column names so they differ from the original sample matrix
+  mat.vars <- read.csv(file = file.path(out_path, mat.path), row.names = 1)
+  key.envvars <- colnames(mat.vars)[-c(1:4)]
+  key.envvars
+  colnames(mat.vars)[-c(1:3)] <- paste0(colnames(mat.vars)[-c(1:3)],"_sem")
+  
+  # add data from original sample matrix, updated column names
+  ps <- readRDS(file = file.path(merged_path, ps.path))
+  sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+  sam %>%
+    dplyr::select(sample.name.match, Site, SiteSamp, mono.mixed, key.envvars) -> sam.tmp
+  colnames(sam.tmp)[colnames(sam.tmp) %in% key.envvars] <- paste0(colnames(sam.tmp)[colnames(sam.tmp) %in% key.envvars], "_orig")
+  mat.vars %>%
+    left_join(sam.tmp) -> mat.df
+  
+  # add transformed but not scaled data
+  mat.trans <- read.csv(file = file.path(out_path, transNotscaled_path), row.names = 1)
+  new.names <- paste0(colnames(mat.trans)[-c(1:2)], "_trans")
+  colnames(mat.trans)[-c(1:2)] <- new.names
+  mat.df %>%
+    left_join(mat.trans) -> mat.df
+  
+  # load dpcoa1 ASV scores
+  dpcoa <- readRDS(dpcoa.path)
+  ax1 <- data.frame(sample.name.match = row.names(dpcoa$li), Axis1 = dpcoa$li$Axis1)
+  mat.df %>%
+    left_join(ax1) -> mat.df
+  asv.df <- data.frame(ASV = row.names(dpcoa$dls), CS1 = dpcoa$dls[,'CS1'], row.names = NULL)
+  
+  
+  # don't need to do this because Ax1 has not been scaled
+  # # load dpcoa1 scaling attributes for sem
+  # d <- readRDS(file = file.path(out_path, attr.path))
+  # asv.df$CS1_sem <- (asv.df$CS1 / attr(d, 'scaled:scale')['Axis1']) + attr(d, 'scaled:center')['Axis1']
+  
+  # add ASV taxonomic info
+  tax.df <- data.frame(tax_table(ps), stringsAsFactors = F)
+  asv.df %>%
+    left_join(tax.df) -> asv.df
+  
+  out.list <- list(mat.df = mat.df, asv.df = asv.df)
+  return(out.list)
+  
+}
+
+format_phySumms <- function(asv.df, rescale){
+  # summarize the dpcoa axis space by each taxonomic level on the SEM scale
+  if(rescale == TRUE){
+    asv.df %>%
+    group_by(phylum) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> phy.df
+  asv.df %>%
+    group_by(class) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> class.df
+  asv.df %>%
+    group_by(order) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> order.df
+  
+  asv.df %>%
+    group_by(family) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> family.df
+  
+  asv.df %>%
+    group_by(genus) %>%
+    summarize(max.ax1 = max(CS1_sem),
+              min.ax1 = min(CS1_sem),
+              mean.ax1 = mean(CS1_sem)) -> genus.df
+  }else{
+    
+    asv.df %>%
+    group_by(phylum) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> phy.df
+  asv.df %>%
+    group_by(class) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> class.df
+  asv.df %>%
+    group_by(order) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> order.df
+  
+  asv.df %>%
+    group_by(family) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> family.df
+  
+  asv.df %>%
+    group_by(genus) %>%
+    summarize(max.ax1 = max(CS1),
+              min.ax1 = min(CS1),
+              mean.ax1 = mean(CS1)) -> genus.df
+    
+  }
+  
+  summ.list <- list(phylum = phy.df, class = class.df, order = order.df, family = family.df, genus = genus.df)
+  return(summ.list)
+  
+}
+
+make_ribbon_df <- function(n.out, x.min, x.max, subtax.df){
+  x <- seq(from = x.min, to = x.max, length.out = n.out)
+  x.df <- data.frame(x, group = rep(subtax.df[[1]],  each = n.out), stringsAsFactors = F)
+  colnames(subtax.df)[1] <- "group"
+  subtax.df %>%
+    full_join(x.df) -> tmp
+  return(tmp)
+}
+
+```
+
+Format plot functions
+```{r, include = F}
+make_phylum_background <- function(phylum.indx, curr.phylist, ymin, ymax, ylab, flipy, labelPhy){
+  
+  # curr.phylist <- phylist.l
+  # ymin <- -19
+  # ymax <- 8
+  
+  # make tissue-specific phylum.indx
+  if(flipy == FALSE){
+    phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  }
+  if(flipy == TRUE){
+    phylum.indx %>%
+      left_join(curr.phylist$phylum) %>%
+      arrange(order) %>%
+      filter(!is.na(mean.ax1)) %>%
+      mutate(max.ax1 = max.ax1*-1) %>% # flip the direction of the DPCoA axis
+      mutate(min.ax1 = min.ax1*-1) %>%
+      mutate(mean.ax1 = mean.ax1*-1) -> curr.phylum.indx
+  }
+  
+  # plot
+  p <- ggplot(data = curr.phylum.indx, 
+              mapping = aes(x = order, y = mean.ax1, color = phylum)) +
+    geom_point(pch = 3) +
+    geom_errorbar(aes(ymin = min.ax1, ymax = max.ax1)) +
+    theme_classic() +
+    ylab(ylab) +
+    # theme_void() +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank()) +
+    scale_color_manual(values = phylum.colors) +
+    guides(color = F) +
+    ylim(c(ymin, ymax))
+  p
+  if(labelPhy == TRUE){
+  p <- p + geom_text(aes(label = prettyname.short, hjust = 0.5, vjust = -.5, angle = 90), size = 3)
+  }
+  
+  return(p)
+  
+}
+
+make_biplot <- function(data, xcol, ycol, xlab, ylab, yrange, yaxlab, flipy, hexcol){
+  
+  # data <- post.s$mat.df
+  # ycol <- "Axis1"
+  # ylab <- "Soil fung DPCoA1"
+  # yrange <- y.range.s
+  # xcol <- "stand.age.yrs.num_trans"
+  # xlab <- "Stand age"
+
+  xcol <- data[,xcol]
+  ycol <- data[,ycol]
+  if(flipy == FALSE){
+    df <- data.frame(xcol = xcol, ycol=ycol)
+  }
+  if(flipy == TRUE){
+    df <- data.frame(xcol = xcol, ycol=ycol * -1)
+  }
+  p <- ggplot() + geom_point(data = df,
+                             mapping = aes(x = xcol, y = ycol),
+                             color = hexcol,
+                             inherit.aes = F) +
+    xlab(xlab) +
+    ylab(ylab) +
+    theme_classic() +
+    ylim(c(yrange[1], yrange[2]))
+
+  
+  if(yaxlab == FALSE){
+    p <- p + theme(axis.title.y=element_blank(),
+              axis.text.y = element_blank())
+  }
+  
+  return(p)
+}
+
+make_biplot_empty <- function(xlab, ylab, yrange, yaxlab){
+
+  p <- ggplot() + 
+    xlab(xlab) +
+    ylab(ylab) +
+    theme_classic() +
+    ylim(c(yrange[1], yrange[2]))
+  p
+  
+  if(yaxlab == FALSE){
+    p <- p + theme(axis.title.y=element_blank(),
+              axis.text.y = element_blank())
+  }
+  
+  return(p)
+}
+
+```
+
+Set phylum levels and colors
+```{r, include = F}
+#devtools::install_github("jaredhuling/jcolors")
+library(jcolors)
+#jcolors("pal7")
+
+phylum.levels <- c("p__Ascomycota",
+                   "p__Basidiomycota",
+                   "p__Glomeromycota",
+                   "p__Chytridiomycota")
+
+phylum.colors <- c("#404285","#42858C","#570D32","#dd9933")
+
+names(phylum.colors) <- phylum.levels
+phylum.pretty <- c("Ascomycota","Basidiomycota","Glomeromycota","Chytridiomycota")
+phylum.indx <- data.frame(phylum = names(phylum.colors), phylum.colors, 
+                          stringsAsFactors = F, 
+                          row.names = NULL)
+phylum.indx %>%
+  separate(phylum, into = c(NA,"prettyname"), sep = "__", remove = F) %>%
+  mutate(order = seq(1:4)) -> phylum.indx
+phylum.indx$prettyname.short <- c("Asco","Basidio","Glomero","Chytridio")
+phylum.indx
+
+
+```
+
+
+## 2. Make plotting dataframes -- samples
+```{r, include = F}
+
+# leaf
+post.l <- format_postsem_dfs(mat.path = "leaf_dpcoa_SEMdata.csv", 
+                           ps.path = "phyloseq_samps_env_trimTreeASVs_leaf.RData",
+                           dpcoa.path = "output/illumina/Q0/dpcoa_leaf.RData", 
+                           attr.path = "scaledmat_l.RData")
+phylist.l <- format_phySumms(asv.df = post.l$asv.df, rescale = FALSE)
+#phylist.l
+
+# root
+post.r <- format_postsem_dfs(mat.path = "root_dpcoa_SEMdata.csv", 
+                           ps.path = "phyloseq_samps_env_trimTreeASVs_root.RData",
+                           dpcoa.path = "output/illumina/Q0/dpcoa_root.RData", 
+                           attr.path = "scaledmat_r.RData")
+phylist.r <- format_phySumms(asv.df = post.r$asv.df, rescale = F)
+
+# soil
+post.s <- format_postsem_dfs(mat.path = "soil_dpcoa_SEMdata.csv", 
+                           ps.path = "phyloseq_samps_env_trimTreeASVs_soil.RData",
+                           dpcoa.path = "output/illumina/Q0/dpcoa_soil.RData", 
+                           attr.path = "scaledmat_s.RData")
+phylist.s <- format_phySumms(asv.df = post.s$asv.df, rescale = F)
+
+```
+
+## 3. Make plotting dataframes and set up universal scale -- ASVs
+
+*by class* (commented out)
+```{r, include = F}
+# 
+# phylist.l$class %>%
+#   mutate(class = ifelse(is.na(class), "c__unidentified", class)) %>%
+#   separate(class, into = c(NA,"prettyname"), remove = F, sep = "__") %>%
+#   mutate(diff = max.ax1 - min.ax1) %>%
+#   arrange(-diff) %>%
+#   mutate(order = seq(1, dim(phylist.l$class)[1])) -> tmp
+
+# p.dpcoa2 <- ggplot(data = tmp, 
+#        mapping = aes(x = order, y = mean.ax1, color = class)) +
+#   geom_point(pch = 3) +
+#   geom_errorbar(aes(ymin = min.ax1, ymax = max.ax1)) +
+#   geom_text(aes(label = prettyname, hjust = 0.5, vjust = 1.5, angle = 90)) +
+#   theme_classic() +
+#   theme(axis.title.x=element_blank(),
+#         axis.text.x=element_blank(),
+#         axis.ticks.x=element_blank()) +
+#   guides(color=F) +
+#   ylab("Leaf fungi DPCoA1 (scaled)")
+# p.dpcoa2
+# ggsave(file.path(out_path, "bivarsem_l_class.pdf"), width = 8, height = 6)
+# tmp.c <- tmp
+
+```
+
+*by phylum*
+```{r, include = F}
+
+# leaf
+vals <- c(range(post.l$mat.df$Axis1), range(post.l$asv.df$CS1))
+range(vals)
+ymin <- -19
+ymax <- 8
+y.range.l <- c(ymin, ymax)
+p.phylum.l <- make_phylum_background(phylum.indx, curr.phylist = phylist.l, 
+                                     ymin=ymin, ymax=ymax, flipy = FALSE, 
+                                     ylab = "Leaf fungi DPCoA1", labelPhy = FALSE)
+p.phylum.l
+
+# for main SEM figure
+  # make tissue-specific phylum.indx
+curr.phylist <- phylist.l
+phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  
+# plot
+curr.phylum.indx %>%
+  mutate(mid = (max.ax1 - min.ax1)/2) -> tmp
+tmp[2,"mid"] <- tmp[2,"mid"] * -1
+tmp$order <- c(1,1.5,2)
+tmp %>%
+  mutate(prettyname.short2 = ifelse(prettyname.short == "Chytridio", " ", prettyname.short)) -> tmp
+
+
+p <- ggplot(data = tmp, 
+            mapping = aes(y = rev(order), x = mean.ax1, color = phylum)) +
+  geom_point(pch = 3) +
+  geom_errorbarh(aes(xmin = min.ax1, xmax = max.ax1), height = .3) +
+  geom_text(aes(y = rev(order), x = mid, 
+                label = prettyname.short2), size = 6, vjust = -1) +
+  theme_classic() +
+  ylab(NULL) + xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line.y = element_blank()) +
+  scale_color_manual(values = phylum.colors) +
+  guides(color = F) +
+  scale_x_continuous(position = "top", limits = c(ymin, ymax)) +
+  ylim(c(0.5, 2.25)) +
+  annotate("text", x = -5, y = 1, label = "Chytridio", size = 6, color = "#dd9933")
+#p
+# ggsave(p, filename = file.path(out_path, "leaf_semLabel.png"), 
+#        width = 3.5, height = 2.5)
+  
+
+# root
+vals <- c(range(post.r$mat.df$Axis1), range(post.r$asv.df$CS1))
+range(vals)
+ymin <- -14
+ymax <- 12
+y.range.r <- c(ymin, ymax)
+p.phylum.r <- make_phylum_background(phylum.indx, curr.phylist = phylist.r, 
+                                     ymin=ymin, ymax=ymax, flipy = FALSE,
+                                     ylab = "Root fungi DPCoA1", labelPhy = FALSE)
+#p.phylum.r
+# for main SEM figure
+  # make tissue-specific phylum.indx
+curr.phylist <- phylist.r
+phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  
+# plot
+curr.phylum.indx %>%
+  mutate(mid = (max.ax1 - min.ax1)/2 + min.ax1) -> tmp
+#tmp
+tmp[3,"mid"] <- tmp[3,"mid"] * -0.1
+tmp$order <- c(2,1,1.5,.5)
+p <- ggplot(data = tmp, 
+            mapping = aes(y = order, x = mean.ax1, color = phylum)) +
+  geom_point(pch = 3) +
+  geom_errorbarh(aes(xmin = min.ax1, xmax = max.ax1), height = .3) +
+  geom_text(aes(y = order, x = mid, 
+                label = prettyname.short), size = 6, vjust = -1) +
+  theme_classic() +
+  ylab(NULL) + xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line.y = element_blank()) +
+  scale_color_manual(values = phylum.colors) +
+  guides(color = F) +
+  scale_x_continuous(position = "top", limits = c(ymin, ymax)) +
+  ylim(c(0, 2.5))
+#p
+# ggsave(p, filename = file.path(out_path, "root_semLabel.png"), 
+#        width = 3.5, height = 3)
+
+# soil
+vals <- c(range(post.s$mat.df$Axis1), range(post.s$asv.df$CS1))
+range(vals)
+ymin <- -17 # remember that I will be fliping the y scale
+ymax <- 8
+y.range.s <- c(ymin, ymax)
+p.phylum.s <- make_phylum_background(phylum.indx, curr.phylist = phylist.s, 
+                                     ymin=ymin, ymax=ymax, flipy = TRUE,
+                                     ylab = "Soil fungi DPCoA1", labelPhy = FALSE)
+#p.phylum.s
+
+# for main SEM figure
+  # make tissue-specific phylum.indx
+curr.phylist <- phylist.s
+phylum.indx %>%
+    left_join(curr.phylist$phylum) %>%
+    arrange(order) %>%
+    filter(!is.na(mean.ax1)) -> curr.phylum.indx
+  
+# plot
+curr.phylum.indx %>%
+  mutate(mid = (max.ax1 - min.ax1)/2 + min.ax1) -> tmp
+tmp
+tmp[3,"mid"] <- tmp[3,"mid"] * -0.1
+tmp$order <- c(2,1,1.5,.5)
+p <- ggplot(data = tmp, 
+            mapping = aes(y = order, x = mean.ax1*-1, color = phylum)) +
+  geom_point(pch = 3) +
+  geom_errorbarh(aes(xmin = min.ax1*-1, xmax = max.ax1*-1), height = .3) +
+  geom_text(aes(y = order, x = mid*-1, 
+                label = prettyname.short), size = 6, vjust = -1) +
+  theme_classic() +
+  ylab(NULL) + xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.line.y = element_blank()) +
+  scale_color_manual(values = phylum.colors) +
+  guides(color = F) +
+  scale_x_continuous(position = "top", limits = c(ymin, ymax)) +
+  ylim(c(0, 2.5))
+#p
+# ggsave(p, filename = file.path(out_path, "soil_semLabel.png"), 
+#        width = 3.5, height = 3)
+
+```
+
+## 4. Plot -- Direct only
+
+```{r, include = F}
+tissue.colors <- c("#288737", "#4678a8", "#cbba4e")
+names(tissue.colors) <- c("L","R","S")
+```
+
+*Leaf*
+```{r, include = F}
+data <- post.l$mat.df
+ycol <- "Axis1"
+ylab <- "Leaf fungi DPCoA1"
+yrange <- y.range.l
+xcols.base <- c("max.height.m","ph","K","P")
+xlabs <- c("Plant height (m)","Soil pH", "Soil K (log ug/g)", 
+           "Soil P (log ug/g)")
+x.df <- data.frame(xcols.base, xlabs)
+x.df %>%
+  mutate(xcols = paste0(xcols.base, "_trans")) -> x.df
+#x.df
+
+pl.list <- list()
+for(i in 1:length(xcols.base)){
+  pl.list[[i]] <- make_biplot(data = data, 
+            xcol = x.df[i,"xcols"], ycol = ycol,
+            xlab = x.df[i,"xlabs"], ylab = ylab,
+            yrange = yrange, yaxlab = FALSE, flipy = FALSE, hexcol = tissue.colors[1])
+}
+names(pl.list) <- x.df$xcols.base
+
+# empty plot
+pl.empty <- make_biplot_empty(xlab = xlabs[1], ylab= ylab, yrange = y.range.l, yaxlab = FALSE)
+#pl.empty + theme_void()
+
+#require(ggpubr)
+#l.row <- ggarrange(p.phylum.l, plotlist = pl.list, nrow = 1, align = "h")
+
+```
+
+*Root*
+```{r, include = F}
+data <- post.r$mat.df
+ycol <- "Axis1"
+ylab <- "Root fungi DPCoA1"
+yrange <- y.range.r
+xcols.base <- c("max.height.m","ph","Mn","perc.clay")
+xlabs <- c("Plant height (m)","Soil pH", "Soil Mn (log ug/g)", 
+           "Clay (logit %)")
+x.df <- data.frame(xcols.base, xlabs)
+x.df %>%
+  mutate(xcols = paste0(xcols.base, "_trans")) -> x.df
+
+pr.list <- list()
+for(i in 1:length(xcols.base)){
+  pr.list[[i]] <- make_biplot(data = data, 
+            xcol = x.df[i,"xcols"], ycol = ycol,
+            xlab = x.df[i,"xlabs"], ylab = ylab,
+            yrange = yrange, yaxlab = FALSE, flipy = FALSE, hexcol = tissue.colors[2])
+}
+names(pr.list) <- x.df$xcols.base
+
+# empty plot
+pr.empty <- make_biplot_empty(xlab = xlabs[1], ylab= ylab, yrange = y.range.r, yaxlab = FALSE)
+
+#require(ggpubr)
+#r.row <- ggarrange(p.phylum.r, plotlist = pr.list, nrow = 1, align = "h")
+#r.row
+
+```
+
+*Soil*
+```{r, include = F}
+data <- post.s$mat.df
+ycol <- "Axis1"
+ylab <- "Soil fungi DPCoA1"
+yrange <- y.range.s
+xcols.base <- c("stand.age.yrs.num","Cu","TIN","doc","perc.clay")
+xlabs <- c("Stand age (log yrs)","Soil Cu (log ug/g)", 
+           "Soil TIN (log ug/g)", 
+           "Soil DOC (log ug/g)", 
+           "Clay (logit %)")
+x.df <- data.frame(xcols.base, xlabs)
+x.df %>%
+  mutate(xcols = paste0(xcols.base, "_trans")) -> x.df
+
+ps.list <- list()
+for(i in 1:length(xcols.base)){
+  ps.list[[i]] <- make_biplot(data = data, 
+            xcol = x.df[i,"xcols"], ycol = ycol,
+            xlab = x.df[i,"xlabs"], ylab = ylab,
+            yrange = yrange, yaxlab = FALSE, flipy = TRUE, hexcol = tissue.colors[3])
+}
+names(ps.list) <- x.df$xcols.base
+
+# empty plot
+ps.empty <- make_biplot_empty(xlab = xlabs[1], ylab= ylab, yrange = y.range.s, yaxlab = FALSE)
+#ps.empty + theme_void()
+
+# require(ggpubr)
+# s.row <- ggarrange(p.phylum.s, plotlist = ps.list, nrow = 1, align = "h")
+# s.row
+```
+
+save the plots
+```{r, echo = F}
+require(ggpubr)
+
+bigthing <- ggarrange(
+  
+  p.phylum.l,
+  pl.list$max.height.m, pl.list$ph, pl.list$K, pl.list$P, 
+  pl.empty + theme_void(),
+  
+  p.phylum.r,
+  pr.list$max.height.m, pr.list$ph, pr.list$Mn, pr.list$perc.clay,
+  pr.empty + theme_void(),
+  
+  p.phylum.s,
+  ps.list$stand.age.yrs.num, ps.list$Cu, ps.list$TIN, ps.list$doc, ps.list$perc.clay, 
+  
+  nrow = 3, ncol = 6, align = "h", widths = c(.6, 1,1,1,1,1)
+)
+bigthing
+# 
+# ggsave(bigthing, filename = file.path(out_path, "bivariateSEM_lrs.png"), 
+#          width = 9.7, height = 5.5)
+
+```
+
+
+## 5. Plot -- Indirect only
+
+*Leaf*
+```{r, include = F}
+# height x ph
+pl.height <- ggplot(post.l$mat.df, aes(x = max.height.m_trans, y = Axis1, 
+                             color = ph_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Leaf fungi DPCoA1") + xlab("Plant height (m)") +
+  scale_color_viridis_c(name = "Soil pH") +
+  ylim(ymin = y.range.l[1], ymax = y.range.l[2])
+#pl.height
+
+# P x sand
+pl.P <- ggplot(post.l$mat.df, aes(x = P_trans, y = Axis1, 
+                          color = perc.sand_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Leaf fungi DPCoA1") + xlab("Soil P (log mg/dm3)") +
+  scale_color_viridis_c(name = "Sand (%^3)") +
+  ylim(ymin = y.range.l[1], ymax = y.range.l[2])
+#pl.P
+
+```
+
+*Root*
+```{r, include = F}
+
+# height x ph
+pr.height <- ggplot(post.r$mat.df, aes(x = max.height.m_trans, y = Axis1, 
+                             color = ph_trans, size = Mn_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Root fungi DPCoA1") + xlab("Plant height (m)") +
+  scale_color_viridis_c(name = "Soil pH") +
+  scale_size_continuous(name = "Soil Mn (log+1 mg/dm3)") +
+  ylim(ymin = y.range.r[1], ymax = y.range.r[2])
+#pr.height
+
+```
+
+*Soil*
+```{r, include = F}
+# remember to flip the yaxis
+
+# stand age x Cu
+ps.Cu <- ggplot(post.s$mat.df, aes(x = Cu_trans, y = Axis1*-1, 
+                             color = stand.age.yrs.num_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil fungi DPCoA1") + xlab("Soil Cu (log mg/dm3)") +
+  scale_color_viridis_c(name = "Stand age (log+1 yrs)") +
+  ylim(ymin = y.range.s[1], ymax = y.range.s[2])
+#ps.Cu
+
+# DOC x clay
+ps.doc <- ggplot(post.s$mat.df, aes(x = doc_trans, y = Axis1*-1, 
+                             color = perc.clay_trans)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil fungi DPCoA1") + xlab("Soil DOC (log+1 ug/g)") +
+  scale_color_viridis_c(name = "Clay (log+1 %)") +
+  ylim(ymin = y.range.s[1], ymax = y.range.s[2])
+#ps.doc
+
+
+```
+
+save the plots
+
+```{r, echo = F}
+#require(ggpubr)
+
+bigthing <- ggarrange(
+  
+  p.phylum.l, pl.height + guides(color = F, size = F) + 
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank()),
+  
+  p.phylum.r, pr.height + guides(color = F, size = F) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank()),
+  
+  p.phylum.s, ps.Cu + guides(color = F, size = F) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank()),
+  
+  nrow = 3, ncol = 2, align = "h", widths = c(0.6, 1)
+)
+bigthing
+
+leg.pl.height <- get_legend(pl.height)
+leg.pr.height <- get_legend(pr.height)
+leg.ps.Cu <- get_legend(ps.Cu)
+
+leg <- ggarrange(
+  as_ggplot(leg.pl.height),
+  as_ggplot(leg.pr.height),
+  as_ggplot(leg.ps.Cu),
+  
+  nrow = 3, ncol = 1
+)
+
+together <- ggarrange(bigthing, leg, ncol = 2, widths = c(1,.3))
+#ggexport(together, filename = file.path(out_path, "bivariateSEM_lrs_plantint.pdf"), width = 7, height = 8)
+
+```
+
+add plots that show relevant correlations between predictor vars
+
+```{r, echo = F}
+
+heightVph <- ggplot(post.r$mat.df, aes(x = max.height.m_trans, y = ph_trans, shape = mono.mixed)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil pH") + xlab("Plant height (m)") +
+  scale_shape_discrete(name = "Stand type")
+#heightVph 
+
+heightVMn <- ggplot(post.r$mat.df, aes(x = max.height.m_trans, y = Mn_trans, shape = mono.mixed)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Soil Mn (log+1 mg/dm3)") + xlab("Plant height (m)") +
+  scale_shape_discrete(name = "Stand type")
+#heightVMn
+
+standageVcu <- ggplot(post.s$mat.df, aes(x = Cu_trans, y = stand.age.yrs.num_trans, shape = mono.mixed)) +
+  geom_point() +
+  theme_classic() +
+  ylab("Stand age (log+1 yrs)") + xlab("Soil Cu (mg/dm3)") +
+  scale_shape_discrete(name = "Stand type")
+#standageVcu 
+
+both <- ggarrange(heightVph, heightVMn, standageVcu, nrow = 3, common.legend = T)
+both
+#ggexport(both, filename = file.path(out_path, "bivariateSEM_plantint_corrVars.pdf"), width = 3.5, height = 8)
+
+
+```
+
+_______________________________
+

@@ -1,0 +1,901 @@
+---
+title: "IllumFUN_Q2a: Which variables to include in path analysis?"
+author: "Marissa Lee"
+date: "12/16/2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Q2. How are differences in fungal composition across the landscape explained by environmental variables?
+
+*Table of contents*
+
+#### 0. Load data and pre-process ASV matrix
+See IllumFUN_Q1.Rmd
+
+#### A. Determine which environmental variables to include in path analysis
+1. Select initial continuous variables
+2. Remove variables that are highly correlated (>0.8)
+3. Transform to normal all environmental variables
+4. Again, check for correlated variables
+5. Variable selection w/ LASSO
+
+Load packages, functions, paths
+```{r, include = FALSE}
+
+# paths
+merged_path <- "data_intermediates/Illum_analyses/FUN-merged"
+out_path <- "output/illumina/Q2"
+
+# custom functions
+source("code/helpers.R") # misc helpful fxns
+#sourceDir("code") # loads all the custom functions in this folder
+
+# formatting
+require("tidyverse"); packageVersion("tidyverse")
+require("readxl"); packageVersion("readxl") # to read in excel files
+#library("gridExtra"); packageVersion("gridExtra")
+library("phyloseq");  packageVersion("phyloseq")
+library("speedyseq")
+
+# stats
+library("corrplot")
+library("MVN")
+#library("vegan"); packageVersion("vegan") # vif.cca() function
+#library("jtools"); packageVersion("jtools") # used to test environmental differences based on plot type
+#library("car"); packageVersion("car") # has vif tools
+#library(MCMCpack)
+#library(MCMCvis)
+#library(Hmsc)
+
+
+```
+
+Load custom functions
+```{r, include=FALSE}
+
+# calc geometric mean of each ASV
+gm_mean = function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+
+update_vst <- function(ps){
+  
+  require(DESeq2)
+  require(phyloseq)
+  
+  ps_ds <- phyloseq_to_deseq2(ps, ~1) # convert phyloseq to DeSeq object
+  geoMeans = apply(counts(ps_ds), 1, gm_mean) # calc geometric mean of each ASV
+  ps_ds = estimateSizeFactors(ps_ds, type="ratio", geoMeans = geoMeans)
+  ps_ds = estimateDispersions(ps_ds, fitType = "parametric")
+  #plotDispEsts(ps_ds) # plot the dispersion estimates
+  vst <- getVarianceStabilizedData(ps_ds)
+  vst <- t(vst) # need to make the rows samples
+  
+  ps.new <- ps
+  otu_table(ps.new) <- otu_table(vst, taxa_are_rows = F)
+  return(ps.new)
+  
+}
+
+
+```
+
+________________________________
+
+# A. Determine which environmental variables to include in path analysis
+
+## 1. Select initial continuous variables
+
+Include stand.age as a continuous predictor?
+```{r, include = F}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+#ps
+sam <- data.frame(sample_data(ps))
+sam %>%
+  dplyr::select(Site, mono.mixed, stand.age.yrs.num, stand.age.yrs.cat) -> tmp
+
+# tmp %>%
+#   group_by(stand.age.yrs.num) %>%
+#   summarize(n = length(unique(Site)))
+# # one site has a category but not a number
+#
+# tmp %>%
+#   filter(is.na(stand.age.yrs.num)) %>%
+#   select(Site, stand.age.yrs.num, stand.age.yrs.cat) %>%
+#   unique()
+
+sam[sam$Site == "LWR-BHO-NCS", "stand.age.yrs.num"] <- 11
+
+```
+Yes -- just need to include a conservative estimate for LWR-BHO's stand age. It is over 10 yrs old, but unclear how old, so fill in as 11 yrs for now.
+
+Calculate max basal area. Use the max basal width and length to calculate ellipse area
+```{r}
+# # A = pi * .5(width) * .5(length)
+sam %>%
+  mutate(basal.area.m2 = pi * (0.5* max.basallength.m) * (0.5* max.basalwidth.m)) -> sam
+```
+
+Use bulk density(g/cm3) in NCDA&CS soil report to convert to element conc (mg/dm3) into (ug/g soil)
+```{r}
+mg.dm3_to_ug.g <- function(x.mg.dm3, bulk){
+  # convert from dm3 to cm3
+  x.mg.cm3 <- x.mg.dm3 / 1000
+  # convert from cm3 to g soil with bulk soil (g/cm3)
+  x.mg.g <- x.mg.cm3 / bulk
+  # convert from mg/g to ug/g
+  x.ug.g <- x.mg.g * 1000
+  return(x.ug.g)
+}
+```
+
+Select initial subset of continuous variables
+
+- *Exclude silt* since sand + clay + silt = 100
+- *Exclude nh4 and no3* since nh4 + no3 = TIN
+- *Exclude BS, Ac, and CEC* since this is represented by ph and texture
+
+```{r, include = F}
+# Exclude silt since 100 - (sand + clay) = silt
+
+# Exclude nh4 + no3 since TIN
+
+initial.subset <- c("MAP.mm", "MAT.C",
+                    "SOM","W.V","ph",
+                    "watercontent",
+                    "P","K","Ca","Cu","Mg","Mn","S", "Zn",
+                    "TIN","p.resin","mbc","doc",
+                    "perc.C","perc.N", 
+                    "perc.sand", "perc.clay",
+                    "basal.area.m2", "max.height.m", "stand.age.yrs.num")
+initial.subset
+length(initial.subset)
+```
+
+Update phyloseq objects with stand.age and basal area decisions
+```{r, include = F}
+# modify the sample data with (1) stand age update, and (2) calc plant basal area
+mg.dm3_to_ug.g <- function(x.mg.dm3, bulk){
+  # convert from dm3 to cm3
+  x.mg.cm3 <- x.mg.dm3 / 1000
+  # convert from cm3 to g soil with bulk soil (g/cm3)
+  x.mg.g <- x.mg.cm3 / bulk
+  # convert from mg/g to ug/g
+  x.ug.g <- x.mg.g * 1000
+  return(x.ug.g)
+}
+make.sam.updates <- function(sam){
+
+  #(1) stand age
+  sam[sam$Site == "LWR-BHO-NCS", "stand.age.yrs.num"] <- 11
+  
+  #(2) basal area
+  sam %>%
+    mutate(basal.area.m2 = pi * (0.5* max.basallength.m) * (0.5* max.basalwidth.m)) -> sam
+  
+  #(3) NCAg soil units
+  cols <- c("P","K","Na","Ca","Cu","Mg","Mn","S","Zn")
+  for(i in 1:length(cols)){
+    sam[,cols[i]] <- mg.dm3_to_ug.g(x.mg.dm3 = sam[,cols[i]], bulk = sam[,"W.V"])
+  }
+  sam.updated <- sam
+  
+  return(sam.updated)
+}
+#
+# # # all
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+# 
+# # leaf
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+# #
+# # # root
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# #
+# # # soil
+# ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+# ps
+# sam <- data.frame(sample_data(ps))
+# sam.updated <- make.sam.updates(sam)
+# row.names(sam.updated) <- row.names(sam)
+# sample_data(ps) <- sam.updated
+# saveRDS(ps, file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+
+
+```
+
+Print the Site characteristics table
+```{r, include = F}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+sam %>%
+  select(Site, MAP.mm, MAT.C) -> tmp
+tmp<- unique(tmp)
+range(tmp$MAP.mm)[2] - range(tmp$MAP.mm)[1]
+range(tmp$MAT.C)[2] - range(tmp$MAT.C)[1]
+
+sam %>%
+  select(Site, max.height.m, basal.area.m2, ph, perc.C, P, K, Cu, Mn, TIN, p.resin, doc) -> df
+df <- unique(df)
+dim(df)
+
+df %>%
+  gather(key = "var", value = "value", -Site) %>%
+  group_by(Site, var) %>%
+  summarize(n = length(Site),
+            mean = mean(value),
+            se = sd(value)/sqrt(n)) %>%
+  arrange(var, Site) -> df.summ
+write.csv(df.summ, file.path(out_path, "siteSummary.csv"))
+
+```
+
+Print the correlation matrix
+```{r, include = F}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps), stringsAsFactors = F)
+sam %>%
+  select(Site, SiteSamp, initial.subset, samp.lat, samp.lon) -> df
+df <- unique(df)
+df %>%
+  select(max.height.m, basal.area.m2, stand.age.yrs.num,
+         ph, perc.C, watercontent, doc, p.resin, TIN,
+         SOM, W.V, mbc, 
+         Cu, K, Mg, Mn, P, Zn,
+         Ca, perc.N, S,
+         perc.clay, perc.sand, MAP.mm, MAT.C, samp.lat, samp.lon) -> df
+#cor(df)
+write.csv(cor(df), file = file.path(out_path, "cor_allvars.csv"))
+
+# tmp <- cor(mat)
+# round(tmp[,"stand.age.yrs.num"], digits= 2)
+
+# P 0.38
+# p.resin 0.41
+# basal area 0.48
+# Zn 0.60
+
+# ggplot(df, aes(x = stand.age.yrs.num, y = MAP.mm, color = Site)) +
+#   geom_point() +
+#   guides(color = F)
+# 
+# tmp <- df[,c("MAT.C","MAP.mm","stand.age.yrs.num")]
+# tmp <- unique(tmp)
+# #cor(tmp)
+
+```
+
+## 2. Remove variables that are highly correlated (>0.8)
+
+Bivariate correlations
+```{r, echo = FALSE}
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps))
+sam %>%
+  dplyr::select(SiteSamp, initial.subset,"samp.lat","samp.lon") %>%
+  unique() %>%
+  dplyr::select(-SiteSamp) -> env.mat
+
+cor.env.mat <- cor(env.mat)
+# pdf(file = file.path(out_path, "corrplot_beforeTrim.pdf"), width = 10, height = 10)
+# corrplot(cor.env.mat, method = "number", type = "lower")
+# dev.off()
+# write.csv(cor.env.mat, file = file.path(out_path, "cors.csv"))
+
+df.cor <- data.frame(var1 = row.names(cor.env.mat), cor.env.mat, row.names = NULL)
+df.cor %>%
+  gather(key = "var2", value = "cor", -var1) %>%
+  filter(var1 != var2) -> df.cor
+
+df.cor %>%
+  filter(cor > 0.8) %>%
+  arrange(-cor)
+
+df.cor %>%
+  filter(cor < -0.8) %>%
+  arrange(-cor)
+
+```
+
+Decide on which correlated variables to exclude
+```{r, include = FALSE}
+sam %>%
+  dplyr::select(Site, SiteSamp, mono.mixed, perc.N, perc.C, 
+                ph, BS., Mg, Ca, perc.sand, W.V, watercontent,
+                CEC, SOM, mbc) %>%
+  unique() -> tmp
+
+p.c_n <- ggplot(tmp, aes(x = perc.N, y = perc.C, color = mono.mixed)) +
+  geom_point()
+p.c_n
+
+p.ph_bs<- ggplot(tmp, aes(x = ph, y = BS., color = mono.mixed)) +
+  geom_point()
+p.ph_bs
+
+p.mg_ca <- ggplot(tmp, aes(x = Mg, y = Ca, color = mono.mixed)) +
+  geom_point()
+p.mg_ca
+
+```
+
+- Soil %C and %N (r = 0.93): *Exclude perc.N* because some mixed-tree plots have distinctly greater %C, not %N
+- Soil Mg and Ca (r = 0.91): *Exclude both*. Both are mobile in the form of cations and so are they highly correlated with ph/CEC/texture. 
+
+Decide on more variables to exclude
+```{r, include = FALSE}
+# sam %>%
+#   dplyr::select(initial.subset) %>%
+#   dplyr::select(-c(perc.N, BS., Mg, Ca)) %>%
+#   unique() -> env.mat
+# cor.env.mat <- cor(env.mat)
+# df.cor <- data.frame(var1 = row.names(cor.env.mat), cor.env.mat, row.names = NULL)
+# df.cor %>%
+#   gather(key = "var2", value = "cor", -var1) %>%
+#   filter(var1 != var2) %>%
+#   mutate(var.pair = paste0(var1,"_", var2)) -> df.cor
+# df.cor %>%
+#   filter(cor > 0.8) %>%
+#   arrange(-cor)
+
+sam %>%
+  dplyr::select(Site, mono.mixed, perc.N, perc.C, 
+                ph, Mg, Ca, perc.sand, W.V, watercontent,
+                CEC, SOM, mbc) %>%
+  unique() -> tmp
+
+p.sand_wv<- ggplot(tmp, aes(x = perc.sand, y = W.V, color = mono.mixed)) +
+  geom_point()
+p.sand_wv
+
+p.c_som<- ggplot(tmp, aes(x = perc.C, y = SOM, color = mono.mixed)) +
+  geom_point()
+
+p.c_mbc<- ggplot(tmp, aes(x = perc.C, y = mbc, color = mono.mixed)) +
+  geom_point()
+
+p.som_mbc<- ggplot(tmp, aes(x = SOM, y = mbc, color = mono.mixed)) +
+  geom_point()
+
+require(gridExtra)
+grid.arrange(p.c_mbc + guides(color = F), 
+             p.som_mbc + guides(color = F), 
+             p.c_som + guides(color = F), 
+             ncol = 2)
+
+```
+
+- Soil perc.sand and bulk density (W.V) (r = 0.87): *Exclude bulk density*
+- Soil perc.C and SOM (r = 0.83), soil perc.C and mbc (r = 0.82): *Exclude SOM and mbc*
+
+Examine more variables...
+```{r, include = FALSE}
+sam %>%
+  dplyr::select(Site, mono.mixed, samp.lon, MAT.C) %>%
+  unique() -> tmp
+
+p.lon_C<- ggplot(tmp, aes(x = samp.lon, y = MAT.C, color = mono.mixed)) +
+  geom_point()
+#p.lon_C
+
+```
+
+Remove: perc.N, Ca, W.V, SOM, mbc
+```{r, include = FALSE}
+sam %>%
+  dplyr::select(initial.subset) %>%
+  dplyr::select(-c(perc.N, Ca, W.V, SOM, mbc)) %>%
+  unique()-> env.mat
+
+cont.vars <- colnames(env.mat)
+length(cont.vars)
+saveRDS(cont.vars, file = file.path(out_path, "contvars.RData"))
+
+# put variables into a category: climate, soil properties, plant stand attributes
+cont.vars
+cont.vars.df <- data.frame(var = cont.vars,
+           var.type1 = c(rep("climate", 2), 
+                         rep("soil", 15), 
+                         rep("plant", 3)), 
+           row.names = NULL, stringsAsFactors = F)
+cont.vars.df %>%
+  mutate(var.type2 = ifelse(var %in% c("perc.sand","perc.clay"), "texture", var.type1)) %>%
+  mutate(var.type2 = ifelse(var.type1 == "soil" & var.type2 == "soil", "soil.resources", var.type2)) -> cont.vars.df
+
+write.csv(cont.vars.df, file = file.path(out_path, "contvars_df.csv"))
+dim(cont.vars.df)
+```
+Now there are *20* continuous environmental variables
+
+## 3. Transform to normal all environmental variables
+
+Transform all predictor variables to normally-distributed since this is required for SEM
+```{r, include = F}
+library(MVN)
+cont.vars <- readRDS(file = file.path(out_path, "contvars.RData"))
+# 
+# # load phylo obj w/ complete samples (112)
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+ps
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(cont.vars) -> X
+
+# transform all variables to normal
+mvn(X)
+X.t <- X
+```
+
+*Climate*
+```{r, include = F}
+# MAP.mm
+hist(X[,"MAP.mm"]/1000)
+range(X$MAP.mm/1000)
+shapiro.test(X[,"MAP.mm"]) # just go with non-transform because 1/is confusing
+#shapiro.test(1/log(X[,"MAP.mm"], base = 10)) # very slightly better
+X.t$MAP.mm <- X[,"MAP.mm"]/1000
+
+# MAT.C
+hist(log(X[,"MAT.C"], base = 10))
+shapiro.test(X[,"MAT.C"])
+shapiro.test(log(X[,"MAT.C"]+1, base = 10)) # very slightly better
+range(log(X$MAT.C+1, base= 10))
+X.t$MAT.C <- log(X[,"MAT.C"]+1, base = 10)
+```
+
+*Soil resources*
+```{r, include = F}
+logitTransform <- function(p) { log(p/(1-p), base = 10) }
+
+# ph - already normal
+hist(X$ph)
+
+#watercontent
+hist(X[,"watercontent"])
+shapiro.test(X[,"watercontent"])
+shapiro.test(log(X[,"watercontent"], base= 10)+10) # normal
+range(log(X[,"watercontent"], base= 10)+10)
+X.t$watercontent <- log(X[,"watercontent"], base = 10) + 10
+
+# P
+hist(X$P)
+shapiro.test(X$P)
+shapiro.test(log(X$P+1, base = 10)) # not normal but better
+range(log(X$P+1, base = 10))
+X.t$P <- log(X$P+1, base = 10)
+
+# K
+hist(X$K)
+shapiro.test(X$K)
+shapiro.test(log(X$K+1, base = 10)) # not normal but much better
+range(log(X$K+1, base = 10))
+X.t$K <- log(X$K+1, base = 10)
+
+# Cu
+hist(X$Cu)
+shapiro.test(X$Cu)
+shapiro.test(log(X$Cu+1, base = 10)) # not normal but much better
+range(log(X$Cu+1, base = 10))
+X.t$Cu <- log(X$Cu+1, base = 10)
+
+# Mn
+hist(X$Mn)
+shapiro.test(X$Mn)
+shapiro.test(log(X$Mn+1, base = 10)) # not normal but better
+range(log(X$Mn+1, base = 10))
+X.t$Mn <- log(X$Mn+1, base = 10)
+
+# S
+hist(X$S)
+shapiro.test(X$S)
+shapiro.test(log(X$S+1, base = 10)) # not normal but better
+range(log(X$S+1, base = 10))
+X.t$S <- log(X$S+1, base = 10)
+
+# Zn
+hist(X$Zn)
+hist(log(X$Zn))
+shapiro.test(X$Zn)
+shapiro.test(log(X$Zn, base = 10)+1) # not normal but better
+range(log(X$Zn, base = 10)+1)
+X.t$Zn <- log(X$Zn, base = 10)+1
+
+# Mg
+hist(X$Mg)
+hist(log(X$Mg))
+shapiro.test(X$Mg)
+shapiro.test(log(X$Mg+1, base = 10)) # not normal but better
+range(log(X$Mg, base = 10))
+X.t$Mg <- log(X$Mg+1, base = 10)
+
+# TIN
+hist(X$TIN)
+shapiro.test(log(X$TIN, base = 10)) # normal
+shapiro.test(log(X$TIN+1, base = 10)) # close to normal
+range(log(X$TIN+1, base = 10))
+X.t$TIN <- log(X$TIN+1, base = 10)
+
+# p.resin
+hist(X$p.resin)
+shapiro.test(log(X$p.resin+1, base = 10)) # not normal but better
+range(log(X$p.resin+1, base = 10))
+X.t$p.resin <- log(X$p.resin+1, base = 10)
+
+# doc
+hist(X$doc)
+shapiro.test(X$doc)
+shapiro.test(log(X$doc+1, base = 10)) # not normal but better
+range(log(X$doc+1, base = 10))
+X.t$doc <- log(X$doc+1, base = 10)
+
+# perc.C
+hist(X[,"perc.C"])
+logit <- logitTransform(p = (X[,"perc.C"])/100)
+hist(logit)
+range(logit)
+shapiro.test(X$perc.C)
+shapiro.test(logit) # not normal but better
+X.t$perc.C <- logit
+
+```
+
+*Texture*
+```{r, include = F}
+logitTransform <- function(p) { log(p/(1-p), base = 10) }
+
+#perc.sand
+hist(X[,"perc.sand"])
+logit <- logitTransform(p = (X[,"perc.sand"])/100)
+hist(logit)
+range(logit)
+shapiro.test(X[,"perc.sand"])
+shapiro.test(logit) # better
+X.t$perc.sand <- logit
+
+#perc.clay
+hist(X[,"perc.clay"])
+logit <- logitTransform(p = (X[,"perc.clay"])/100)
+range(logit)
+shapiro.test(X[,"perc.clay"])
+shapiro.test(logit) # better
+X.t$perc.clay <- logit
+
+```
+
+*Plant size and stand age*
+```{r, include = F}
+
+# max.height.m
+hist(X$max.height.m)
+shapiro.test(X$max.height.m) # not normal, but relatively close
+
+# basal.area.m2
+hist(X$basal.area.m2)
+shapiro.test(log(X$basal.area.m2, base = 10)) # normal
+X.t$basal.area.m2 <- log(X$basal.area.m2, base = 10)
+range(log(X$basal.area.m2, base = 10))
+
+# stand.age.yrs.num
+hist(log(X[,"stand.age.yrs.num"]+1, base = 10))
+shapiro.test(X[,"stand.age.yrs.num"])
+shapiro.test(log(X[,"stand.age.yrs.num"]+1, base = 10)) # better
+X.t$stand.age.yrs.num <- log(X[,"stand.age.yrs.num"]+1, base = 10)
+range(log(X[,"stand.age.yrs.num"]+1, base = 10))
+
+```
+
+*Lat and lon*
+```{r, include = F}
+sam %>%
+  dplyr::select(samp.lon, samp.lat) %>%
+  unique() -> tmp
+cor(tmp)
+
+hist(tmp$samp.lon)
+hist(tmp$samp.lat)
+
+shapiro.test(tmp$samp.lon)
+shapiro.test(tmp$samp.lat)
+
+```
+
+Save transformed environmental variables
+```{r, include = F}
+# # # add the site and sample ids
+mat.t <- data.frame(sam[,c("Site","SiteSamp")], X.t, row.names = NULL)
+# # # 
+# # # # save
+write.csv(mat.t, file = file.path(out_path, "normTransformed_contvars.csv"))
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars.csv"), row.names = 1)
+
+```
+
+Examine the correlation of the transformed variables
+```{r, echo = F}
+#add samp.lat and lon
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs.RData"))
+sam <- data.frame(sample_data(ps))
+sam %>%
+  dplyr::select(SiteSamp, samp.lon, samp.lat) %>%
+  unique() -> tmp
+#colnames(mat.t)
+mat.t %>%
+  left_join(tmp) -> mat.t
+
+#head(mat.t)
+cor.mat <- cor(mat.t[,-c(1:2)])
+#cor.mat[,"watercontent"]
+#cor.mat[,"Mg"]
+
+# pdf(file = file.path(out_path, "corrplot_normTransformed.pdf"), width = 8, height = 8)
+corrplot(cor.mat, method = "number", type = "lower")
+# dev.off()
+```
+
+Zn and Cu are highly correlated (0.79); remove Zn. perc.sand and watercontent are highly correlated (-.79); remove watercontent. S and perc.C are highly correlated (0.79); remove S.
+
+lon and MAT are highly correlated (r = 0.82). lat and MAP are highly correlated (r = -0.78). Don't remove lat or lon
+
+Remove highly correlated variables
+```{r, include = F}
+#sel <- !colnames(mat.t) %in% c("watercontent")
+#mat.t.trim <- mat.t[,sel]
+#cor.mat <- cor(mat.t.trim[,-c(1:3)])
+#corrplot(cor.mat, method = "number", type = "lower")
+
+#write.csv(mat.t.trim, file = file.path(out_path, "normTransformed_contvars_trim.csv"))
+#mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim.csv"), row.names = 1)
+#dim(mat.t)
+# colnames(mat.t)
+```
+
+Need to equalize variances; otherwise get this message from lavaan
+"Warning message: In lav_data_full(data = data, group = group, cluster = cluster,  :lavaan WARNING: some observed variances are (at least) a factor 1000 times larger than others; use varTable(fit) to investigate"
+```{r, include = F}
+apply(mat.t[-c(1:2)], 2, var)
+# really low var in MAP and MAT
+range(mat.t$MAP.mm)
+range(mat.t$MAT.C)
+# really high var in samp.lon
+range(mat.t$samp.lon)
+# 
+# # #Mamet 2017: To equalize variances we standardized variables by dividing raw values by their group maximum... we can't do that for all vars because there are negative values
+# # divide by the range instead
+abs.range <- function(x){
+  abs(range(x)[2]- range(x)[1])
+}
+data <- mat.t[,-c(1:2)]
+ranges.vec <- apply(data, 2, abs.range)
+ranges.vec
+data.s <- scale(data, center = FALSE, scale = ranges.vec)
+saveRDS(data.s, file = file.path(out_path, "scaledmat.RData"))
+```
+
+Re-examine the correlation of the variables
+```{r, echo = F}
+# require(corrplot)
+# pdf(file = file.path(out_path, "corrplot_normTransformed_postTrim.pdf"), width = 8, height = 8)
+#cor(data.s)
+corrplot(cor(data.s), method = "number", type = "lower")
+# dev.off()
+# after equalizing vars... 
+# lon and MAT (r = 0.82) 
+# lat and MAP (r = -0.78)
+
+# # add back the site and sample IDs
+mat.ts <- data.frame(mat.t[,c(1:2)], data.s)
+write.csv(mat.ts, file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"))
+
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+```
+
+
+## 4. Variable selection with LASSO
+
+```{r, include = F}
+library(glmnet)
+#package.version('glmnet')
+
+extract.lambda_uni <- function(x, s){
+  tab <- coef(x, s = s)
+  notempty <- tab[tab[,1] != 0,]
+  names(notempty)[-1]
+}
+
+# notes on DPCoA
+#ps.l <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimAssignASVs_leaf.RData"))
+#dpcoa.l <- DPCoA(ps.l, correction = cailliez, scannf = FALSE)
+# distance object ultimately provided is the square root of the cophenetic/patristic (cophenetic.phylo) distance between the species, which is always Euclidean. 
+# correction = Although this distance is Euclidean, for numerical reasons it will sometimes look non-Euclidean, and a correction will be performed (e.g. cailliez). If the distance matrix is Euclidian, no correction will be performed, regardless of the value of the correction argument.
+# scannf = barplot of eigenvalues to be created if TRUE
+#plot_ordination(ps.l, dpcoa.l, "biplot")
+#summary(dpcoa.l)
+# nf = number of axes kept
+# dw = weights of the ASVs
+# lw = weights of all the samples
+# RaoDiv = diversities within samples
+# RaoDis = an object of class dist containing the dissimilarities between samples
+# RaoDecodiv # decomposition of diversity within and between samples
+# dls = coordinates of the ASVs
+# li = coordinates of the samples
+# c1 = scores of the principal axes of the ASVs
+```
+
+*Leaf*
+```{r, echo = T}
+# load phylo obj
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_leaf.RData"))
+
+# calc dpcoa
+#dpcoa <- DPCoA(ps, correction = cailliez, scannf = FALSE)
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_leaf.RData")
+df.dpcoa <- data.frame(sample.name.match = row.names(dpcoa$li), dpcoa$li, row.names = NULL)
+# # load normalized environmental variables
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+# make dataframe
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(sample.name.match, Site, SiteSamp) -> sam
+sam %>%
+  left_join(df.dpcoa) %>%
+  left_join(mat.t) %>%
+  select(-c(sample.name.match, Site, SiteSamp, Axis2)) -> data
+data1 <-as.matrix(data)
+#data1<- data1[,!colnames(data1) %in% c("samp.lon","samp.lat")]
+
+# fit LASSO model with range of lambda
+require(glmnet)
+fit <- glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(fit, xvar = "lambda", label = T)
+# do cv to find appropriate lambda
+cvfit = cv.glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+#plot(cvfit)
+# # extract suggested variables
+extract.lambda_uni(cvfit, s = "lambda.1se")
+extract.lambda_uni(cvfit, s = "lambda.min")
+#
+# # save plots
+# pdf(file = file.path(out_path, "leaf_dpcoa_glmnet.pdf"), width = 4, height = 6)
+# par(mfrow = c(2,1))
+# plot(cvfit)
+# plot(fit, xvar = "lambda", label = T)
+# dev.off()
+
+# save data
+# mat <- data.frame(sam[,c("sample.name.match","Site","SiteSamp")], data1)
+# vars <- extract.lambda_uni(cvfit, s = "lambda.min")
+# vars
+# mat %>%
+#   select(sample.name.match, Site, SiteSamp, Axis1, vars) -> mat.vars
+# mat.vars
+# write.csv(mat.vars, file = file.path(out_path, "leaf_dpcoa_SEMdata.csv"))
+```
+Note that suggested variables may differ from the manuscript due to sampling stochasticity in the glmnet functions
+
+*Root*
+```{r, echo = F}
+# load phylo obj
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_root.RData"))
+# # calc dpcoa
+#dpcoa <- DPCoA(ps, correction = cailliez, scannf = FALSE)
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_root.RData")
+df.dpcoa <- data.frame(sample.name.match = row.names(dpcoa$li), dpcoa$li, row.names = NULL)
+# # load normalized environmental variables
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+# # make dataframe
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(sample.name.match, Site, SiteSamp) -> sam
+sam %>%
+  left_join(df.dpcoa) %>%
+  left_join(mat.t) %>%
+  select(-c(sample.name.match, Site, SiteSamp, Axis2)) -> data
+data1 <-as.matrix(data)
+data1<- data1[,!colnames(data1) %in% c("samp.lon","samp.lat")]
+
+# fit LASSO model with range of lambda
+fit <- glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(fit, xvar = "lambda", label = T)
+# do cv to find appropriate lambda
+cvfit = cv.glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+#plot(cvfit)
+# extract suggested variables
+extract.lambda_uni(cvfit, s = "lambda.1se")
+extract.lambda_uni(cvfit, s = "lambda.min")
+
+# save plots
+# pdf(file = file.path(out_path, "root_dpcoa_glmnet.pdf"), width = 4, height = 6)
+# par(mfrow = c(2,1))
+# plot(cvfit)
+# plot(fit, xvar = "lambda", label = T)
+# dev.off()
+
+# save data
+# mat <- data.frame(sam[,c("sample.name.match","Site","SiteSamp")], data1)
+# vars <- extract.lambda_uni(cvfit, s = "lambda.min")
+# vars
+# mat %>%
+#   select(sample.name.match, Site, SiteSamp, Axis1, vars) -> mat.vars
+# write.csv(mat.vars, file = file.path(out_path, "root_dpcoa_SEMdata.csv"))
+
+```
+
+*Soil* -- Flip the DPCoA axis to help with interpretation
+```{r, echo = F}
+# load phylo obj
+ps <- readRDS(file = file.path(merged_path, "phyloseq_samps_env_trimTreeASVs_soil.RData"))
+# calc dpcoa
+#dpcoa <- DPCoA(ps, correction = cailliez, scannf = FALSE)
+dpcoa <- readRDS("output/illumina/Q0/dpcoa_soil.RData")
+df.dpcoa <- data.frame(sample.name.match = row.names(dpcoa$li), dpcoa$li, row.names = NULL)
+df.dpcoa %>%
+  dplyr::rename('Axis1_orig'='Axis1') %>%
+  mutate(Axis1 = Axis1_orig * -1) -> df.dpcoa
+
+# load normalized environmental variables
+mat.t <- read.csv(file = file.path(out_path, "normTransformed_contvars_trim_scaled.csv"), row.names = 1)
+
+# make dataframe
+sam <- data.frame(sample_data(ps))
+sam %>%
+  select(sample.name.match, Site, SiteSamp) -> sam
+sam %>%
+  left_join(df.dpcoa) %>%
+  left_join(mat.t) %>%
+  select(-c(sample.name.match, Site, SiteSamp, Axis2, Axis1_orig)) -> data
+data1 <-as.matrix(data)
+data<- data1[,!colnames(data1) %in% c("samp.lon","samp.lat")]
+
+# fit LASSO model with range of lambda
+require(glmnet)
+fit <- glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(fit, xvar = "lambda", label = T)
+# do cv to find appropriate lambda
+cvfit = cv.glmnet(x = data1[,-1], y = data1[,1], family = "gaussian")
+plot(cvfit)
+# extract suggested variables
+extract.lambda_uni(cvfit, s = "lambda.1se")
+extract.lambda_uni(cvfit, s = "lambda.min")
+
+# # save plots
+# pdf(file = file.path(out_path, "soil_dpcoa_glmnet.pdf"), width = 4, height = 6)
+# par(mfrow = c(2,1))
+# plot(cvfit)
+# plot(fit, xvar = "lambda", label = T)
+# dev.off()
+# 
+# # save data
+# mat <- data.frame(sam[,c("sample.name.match","Site","SiteSamp")], data1)
+# vars <- extract.lambda_uni(cvfit, s = "lambda.min")
+# vars
+# mat %>%
+#   select(sample.name.match, Site, SiteSamp, Axis1, vars) -> mat.vars
+# write.csv(mat.vars, file = file.path(out_path, "soil_dpcoa_SEMdata.csv"))
+
+```
+
+
+________________________________
